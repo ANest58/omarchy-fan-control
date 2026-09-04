@@ -6,7 +6,7 @@
   "author": "Andon",
   "license": "MIT",
   "description": "WindCore — CPU and GPU temperatures, fan curves, and PWM control for the Omarchy bar.",
-  "homepage": "https://github.com/anesturi/omarchy-fan-control",
+  "homepage": "https://github.com/ANest58/omarchy-fan-control",
   "kinds": [
     "bar-widget"
   ],

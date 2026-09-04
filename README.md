@@ -12,7 +12,7 @@ Plugin id (unchanged for upgrades): `io.github.anesturi.fan-control`
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/anesturi/omarchy-fan-control.git --enable
+omarchy plugin add https://github.com/ANest58/omarchy-fan-control.git --enable
 omarchy bar move io.github.anesturi.fan-control --section right
 omarchy restart shell
 ```
