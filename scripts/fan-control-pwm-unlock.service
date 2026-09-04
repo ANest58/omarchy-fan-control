@@ -1,0 +1,12 @@
+[Unit]
+Description=Unlock motherboard PWM sysfs for Omarchy fan-control
+After=systemd-udevd.service sysinit.target
+Before=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/io.github.anesturi.fan-control/pwm-unlock.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

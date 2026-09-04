@@ -1,0 +1,4 @@
+# Omarchy fan-control: let the active user write motherboard PWM without pkexec.
+# Installed by: python3 scripts/fanctl.py grant-access
+# TEST==pwm1 waits until the first PWM attribute exists (avoids add-before-files).
+ACTION=="add", SUBSYSTEM=="hwmon", TEST=="pwm1", RUN+="/bin/sh -c 'for f in /sys/class/hwmon/%k/pwm[0-9] /sys/class/hwmon/%k/pwm[0-9]_enable; do [ -e \"$$f\" ] && chmod 666 \"$$f\"; done'"

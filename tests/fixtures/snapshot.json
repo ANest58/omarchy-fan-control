@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "demo": false,
+  "alert": false,
+  "label": "54° 61°",
+  "tooltip": "CPU 54° · GPU 61° · 2100 RPM · mbpfan",
+  "cpu": { "name": "coretemp", "temp": 54, "fans": [{ "id": "cpu", "label": "CPU fan", "rpm": 2100, "pwm_percent": 35 }] },
+  "gpu": { "name": "amdgpu", "temp": 61, "fans": [{ "id": "gpu", "label": "GPU fan", "rpm": 1800, "pwm_percent": 42 }] },
+  "backend": { "name": "mbpfan", "running": true, "config_missing": false, "notes": [] },
+  "config": { "low_temp": 63, "high_temp": 66, "max_temp": 86, "system_missing": false }
+}

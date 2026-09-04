@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.anesturi.fan-control",
+  "name": "WindCore",
+  "version": "1.0.0",
+  "author": "Andon",
+  "license": "MIT",
+  "description": "WindCore — CPU and GPU temperatures, fan curves, and PWM control for the Omarchy bar.",
+  "homepage": "https://github.com/anesturi/omarchy-fan-control",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "WindCore",
+    "description": "Bar pill with CPU/GPU temps. Click for presets, follow-curve PWM, and fan telemetry.",
+    "category": "System",
+    "aliases": [
+      "windcore",
+      "fan-control",
+      "mbpfan"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshSeconds": 2
+    },
+    "schema": [
+      {
+        "key": "refreshSeconds",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 2
+      }
+    ]
+  }
+}

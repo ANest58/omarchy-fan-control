@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "demo": false,
+  "alert": false,
+  "label": "72°",
+  "cpu": { "name": "coretemp", "temp": 72, "fans": [] },
+  "gpu": { "name": null, "temp": null, "fans": [] },
+  "backend": {
+    "name": "mbpfan",
+    "running": false,
+    "config_missing": true,
+    "config_error": "could not read /etc/mbpfan.conf",
+    "notes": ["mbpfan is installed but /etc/mbpfan.conf is missing."]
+  },
+  "config": { "low_temp": 63, "high_temp": 66, "max_temp": 86, "system_missing": true }
+}
