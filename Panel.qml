@@ -285,7 +285,7 @@ Panel {
               spacing: Style.space(2)
 
               Text {
-                text: "WIND"
+                text: "WindCore"
                 textFormat: Text.PlainText
                 width: parent.width
                 elide: Text.ElideRight
@@ -293,7 +293,7 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.title
                 font.bold: true
-                font.letterSpacing: 1
+                font.letterSpacing: 0.3
               }
 
               Text {
