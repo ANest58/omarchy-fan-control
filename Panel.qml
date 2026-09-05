@@ -5,7 +5,7 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// WindCore panel. Snapshot stream from scripts/fanctl.py; apply/install
+// Tornaider panel. Snapshot stream from scripts/fanctl.py; apply/install
 // go through a second process so the live feed is never killed.
 Panel {
   id: root
@@ -285,7 +285,7 @@ Panel {
               spacing: Style.space(2)
 
               Text {
-                text: "WindCore"
+                text: "Tornaider"
                 textFormat: Text.PlainText
                 width: parent.width
                 elide: Text.ElideRight

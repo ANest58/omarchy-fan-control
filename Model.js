@@ -1,4 +1,4 @@
-// Data layer for the WindCore panel. Pure functions so the same
+// Data layer for the Tornaider panel. Pure functions so the same
 // file loads in Quickshell and in node --test.
 
 function clean(value, max) {
@@ -182,11 +182,11 @@ function deviceMetrics(device, usageLabel) {
 }
 
 function pillText(snapshot) {
-  if (!snapshot) return "WC …"
+  if (!snapshot) return "T …"
   if (snapshot.label) return clean(snapshot.label, 16)
   var cpu = snapshot.cpu && snapshot.cpu.temp
   var gpu = snapshot.gpu && snapshot.gpu.temp
-  if (cpu == null && gpu == null) return "WC …"
+  if (cpu == null && gpu == null) return "T …"
   if (cpu != null && gpu != null) return Math.round(cpu) + "° " + Math.round(gpu) + "°"
   return Math.round(cpu != null ? cpu : gpu) + "°"
 }

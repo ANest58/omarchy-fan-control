@@ -880,7 +880,7 @@ def format_pill(snapshot: dict[str, Any]) -> str:
     cpu = (snapshot.get("cpu") or {}).get("temp")
     gpu = (snapshot.get("gpu") or {}).get("temp")
     if cpu is None and gpu is None:
-        return "WC …"
+        return "T …"
     if cpu is not None and gpu is not None:
         return f"{int(round(cpu))}° {int(round(gpu))}°"
     value = cpu if cpu is not None else gpu

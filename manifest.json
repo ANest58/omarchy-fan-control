@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "io.github.anesturi.fan-control",
-  "name": "WindCore",
+  "name": "Tornaider",
   "version": "1.0.0",
   "author": "Andon",
   "license": "MIT",
-  "description": "WindCore — CPU and GPU temperatures, fan curves, and PWM control for the Omarchy bar.",
+  "description": "Tornaider — CPU and GPU temperatures, fan curves, and PWM control for the Omarchy bar.",
   "homepage": "https://github.com/ANest58/omarchy-fan-control",
   "kinds": [
     "bar-widget"
@@ -14,11 +14,11 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "WindCore",
+    "displayName": "Tornaider",
     "description": "Bar pill with CPU/GPU temps. Click for presets, follow-curve PWM, and fan telemetry.",
     "category": "System",
     "aliases": [
-      "windcore",
+      "tornaider",
       "fan-control",
       "mbpfan"
     ],

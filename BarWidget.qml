@@ -63,10 +63,10 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: panelLoader.item ? panelLoader.item.label : "WC …"
+    text: panelLoader.item ? panelLoader.item.label : "T …"
     fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
     active: panelLoader.item ? panelLoader.item.isAlert === true : false
-    tooltipText: panelLoader.item ? panelLoader.item.tooltip : "WindCore — CPU and GPU fans"
+    tooltipText: panelLoader.item ? panelLoader.item.tooltip : "Tornaider — CPU and GPU fans"
 
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refresh()

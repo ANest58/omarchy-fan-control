@@ -1,10 +1,10 @@
-# WindCore — developer guide
+# Tornaider — developer guide
 
 High-level map of the plugin for learning and hacking. User-facing docs live in
 [README.md](README.md).
 
 **Plugin id:** `io.github.anesturi.fan-control` (internal folder name; display
-name is **WindCore**)
+name is **Tornaider**)
 
 ---
 

@@ -1,4 +1,4 @@
-# WindCore
+# Tornaider
 
 CPU and GPU temperatures, fan RPM, Quiet / Balanced / Cool presets, and
 **Follow curve** continuous PWM for the Omarchy bar.
@@ -7,7 +7,7 @@ Made with [Cursor](https://cursor.com).
 
 Plugin id (unchanged for upgrades): `io.github.anesturi.fan-control`
 
-![WindCore panel with CPU and GPU temps, fan RPM, and Quiet / Balanced / Cool presets](docs/screenshot.png)
+![Tornaider panel with CPU and GPU temps, fan RPM, and Quiet / Balanced / Cool presets](docs/screenshot.png)
 
 ## Install
 
@@ -191,7 +191,7 @@ Optional cleanup:
 
 ## Credits
 
-WindCore was built with [Cursor](https://cursor.com).
+Tornaider was built with [Cursor](https://cursor.com).
 
 | Project | Credit |
 |---------|--------|
