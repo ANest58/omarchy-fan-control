@@ -42,6 +42,8 @@ The bar never talks to Python directly except through `Panel.qml`, which runs
 | `Model.js` | Pure functions shared by QML and Node tests (no Qt imports) |
 | `scripts/fanctl.py` | Main backend: hwmon, snapshots, curves, PWM, follow daemon |
 | `scripts/fanctl-privileged.py` | pkexec helper; grant copies it to `/usr/lib/io.github.anesturi.fan-control/` |
+| `scripts/pwm-unlock.sh` | **Removed.** Older installs may still have a copy; grant/revoke delete it |
+| `scripts/fan-control-pwm-unlock.service` | **Removed.** Same cleanup as the unlock script |
 | `etc/mbpfan.conf` | Bundled default curve written via validated JSON, not a file copy |
 | `udev/*.rules` | Comment-only leftover; grant/revoke delete any older chmod-666 copy |
 | `polkit/*.policy` | Bound to the installed helper path + argv1 (no `/usr/bin/python3`) |
@@ -195,6 +197,58 @@ Runs under `pkexec`. Must be root-owned at
 - `apply-config` / `install-config` — write `/etc/mbpfan.conf` from a validated curve (no user-path copy)
 - `apply-pwms` — root write of validated hwmon/applesmc PWM paths only
 
+Polkit actions (repo file must match `POLKIT_POLICY_TEXT` in the helper):
+
+| Action id | argv1 | Active session |
+|-----------|-------|----------------|
+| `io.github.anesturi.fan-control.apply-pwms` | `apply-pwms` | `allow_active=yes` (no prompt) |
+| `io.github.anesturi.fan-control.grant` | `grant-access` | `auth_admin` |
+| `io.github.anesturi.fan-control.revoke` | `revoke-access` | `auth_admin` |
+| `io.github.anesturi.fan-control.install-config` | `install-config` | `auth_admin` |
+| `io.github.anesturi.fan-control.apply-config` | `apply-config` | `auth_admin` |
+
+Do not add `/usr/bin/python3` or `auth_admin_keep`. Do not chmod PWM `0666`.
+
+`allowed_sysfs()` resolves the path first, then allows only `hwmonN/pwm*` under
+`/sys/class/hwmon` or `/sys/devices`, plus Apple SMC `fanN_output` /
+`fanN_manual`. Symlinks out of sysfs are rejected.
+
+---
+
+## Privilege boundary
+
+```
+Panel / follow daemon
+        │
+        ▼
+   fanctl.py
+        │
+        ├── PWM 0644 readable? ──write sysfs──► done (rare after grant)
+        │
+        └── run_privileged(argv)
+                 │
+                 ├── trusted helper exists (uid 0, not group/world-writable)
+                 │         pkexec /usr/lib/.../fanctl-privileged.py argv1
+                 │
+                 └── else only grant/revoke/install-config/apply-config
+                           pkexec python3 <checkout helper> argv1
+                           (default python3 policy; password every time)
+```
+
+`apply-pwms` never falls back to checkout `python3`. If the helper is missing
+or world-writable, PWM apply returns an error and asks the user to grant.
+
+First grant copies `__file__` (the running helper) into the root path, writes
+the embedded polkit XML, verifies owner/mode/content, restores PWM to `0644`,
+and deletes:
+
+- `/etc/udev/rules.d/99-io.github.anesturi.fan-control.rules`
+- `/usr/lib/systemd/system-sleep/io.github.anesturi.fan-control`
+- `/etc/systemd/system/io.github.anesturi.fan-control-pwm.service`
+- `/usr/lib/io.github.anesturi.fan-control/pwm-unlock.sh`
+
+After that, only the installed helper is used.
+
 ---
 
 ## Data flow examples
@@ -219,6 +273,15 @@ Runs under `pkexec`. Must be root-owned at
 3. `follow_tick` reads CPU temp, computes duty, writes PWM when change ≥ 5%.
 4. Next `snapshot` line includes `follow.running: true` and live `percent`.
 
+### Click **Allow passwordless control**
+
+1. `actionProc` runs `fanctl.py grant-access`.
+2. `run_privileged(["grant-access"])` pkexecs checkout `python3` the first time,
+   then the installed helper on later grants.
+3. Helper installs itself + polkit, restores PWM `0644`, removes legacy udev.
+4. JSON includes `helper` and `polkit` → panel shows “Passwordless fan control enabled”.
+5. Later preset/follow PWM writes: `pkexec <installed helper> apply-pwms`.
+
 ---
 
 ## Testing
@@ -226,7 +289,15 @@ Runs under `pkexec`. Must be root-owned at
 ### Python (`tests/fanctl_test.py`)
 
 Uses `FANCTL_HWMON_ROOT` to build fake sysfs trees under `/tmp`. Covers config
-parsing, snapshots, PWM apply, follow hysteresis, CLI smoke tests.
+parsing, snapshots, PWM apply, follow hysteresis, CLI smoke tests, and
+`PrivilegeBoundaryTests`:
+
+- polkit has no `/usr/bin/python3` and no `auth_admin_keep`
+- embedded `POLKIT_POLICY_TEXT` matches `polkit/*.policy`
+- udev file has no `MODE=0666`; unlock script/unit are gone
+- `trusted_installed_helper()` rejects wrong uid and group/world-writable files
+- `apply-pwms` without a trusted helper does not exec python3
+- once a helper is installed, checkout `fanctl-privileged.py` is not on the argv
 
 ### Node (`tests/model.test.js`)
 
@@ -265,6 +336,8 @@ node --test tests/model.test.js
 | Add a new CLI command | `main()` in `fanctl.py` + `Panel.runAction` |
 | New bar setting | `manifest.json` `schema` + read via `setting()` in `Panel` |
 | Skip another pump PWM | `SKIP_PWM_INDEXES` |
+| Change polkit actions | `polkit/*.policy` **and** `POLKIT_POLICY_TEXT` in the helper (keep them identical) |
+| Change allowed PWM paths | `allowed_sysfs()` in `fanctl-privileged.py` |
 
 ---
 

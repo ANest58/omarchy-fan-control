@@ -21,6 +21,11 @@ On first install, open the panel and click **Allow passwordless control** if
 motherboard PWM nodes are root-only (desktop PCs). Apple hardware may also need
 `/etc/mbpfan.conf` — use **Install /etc/mbpfan.conf** in the panel or key `i`.
 
+If you granted access on an older plugin copy (udev `chmod 666` / python3
+polkit), click **Allow passwordless control** again after pulling `master`.
+That replaces the old policy, restores PWM nodes to `0644`, and installs the
+root-owned helper.
+
 ## Usage
 
 | Action | How |
@@ -80,6 +85,10 @@ Presets and follow are mutually exclusive: applying a preset **stops** follow mo
 (`~/.config/systemd/user/fan-control-follow.service`); otherwise it spawns a
 detached process. PWM index **2** (AIO pump on many MSI boards) is never driven.
 
+Follow writes PWM through the installed helper when sysfs is root-only. It
+does not chmod fan nodes for your user, and it does not prompt after grant
+(`apply-pwms` is `allow_active=yes` for the active session).
+
 ### Curve reference (Balanced preset)
 
 | Threshold | Fan duty |
@@ -104,6 +113,19 @@ Edit the saved curve:
 ```sh
 ${EDITOR:-nano} ~/.config/mbpfan/mbpfan.conf
 ```
+
+### CLI
+
+From the plugin directory (`$PLUGIN` as above):
+
+| Command | What it does |
+|---------|----------------|
+| `python3 scripts/fanctl.py snapshot` | One JSON sensor snapshot (`--demo` for fake data) |
+| `python3 scripts/fanctl.py apply --preset balanced --user-only` | Save curve and set a fixed PWM duty |
+| `python3 scripts/fanctl.py follow start` / `stop` / `status` | Follow curve daemon |
+| `python3 scripts/fanctl.py grant-access` | Install root-owned helper + polkit (password once) |
+| `python3 scripts/fanctl.py revoke-access` | Remove helper, polkit, leftover udev/hooks |
+| `python3 scripts/fanctl.py install-config` | Write a validated curve to `/etc/mbpfan.conf` |
 
 ## Dependencies and privileges
 
@@ -134,6 +156,30 @@ Bundled files used on request:
 
 - `polkit/io.github.anesturi.fan-control.policy` — actions bound to the installed helper
 - `etc/mbpfan.conf` — default temperature curve for `mbpfan`
+- `udev/99-io.github.anesturi.fan-control.rules` — kept in the repo as a comment-only
+  leftover; **not installed**. Older copies that `chmod 666` PWM nodes are
+  deleted by grant/revoke.
+- `scripts/pwm-unlock.sh` and `scripts/fan-control-pwm-unlock.service` — **removed**.
+  Grant/revoke still delete any copies that an older plugin version installed.
+
+### What grant-access installs
+
+| Path | Mode | Role |
+|------|------|------|
+| `/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py` | `0755`, uid 0 | Only executable PolicyKit will run |
+| `/usr/share/polkit-1/actions/io.github.anesturi.fan-control.policy` | `0644`, uid 0 | Bound to that helper + `argv1` |
+
+PWM sysfs stays `0644`. A second local account cannot write PWM nodes; only
+the helper (active session, `apply-pwms`) can.
+
+Verify after grant:
+
+```sh
+ls -l /usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py
+stat -c '%a %U' /sys/class/hwmon/hwmon*/pwm[0-9]
+# expect 644 root — not 666
+test ! -e /etc/udev/rules.d/99-io.github.anesturi.fan-control.rules && echo "no udev 666 rule"
+```
 
 ## Desktop motherboard fans (NCT6687)
 
@@ -193,10 +239,15 @@ Optional cleanup:
 | Follow state | `rm -rf ~/.local/state/omarchy/fan-control/` |
 | User curve copy | `rm -rf ~/.config/mbpfan/` |
 | System mbpfan config | `sudo rm /etc/mbpfan.conf` |
+| PWM udev rule (legacy) | `sudo rm /etc/udev/rules.d/99-io.github.anesturi.fan-control.rules` |
+| PWM boot/resume unlock (legacy) | `sudo systemctl disable --now io.github.anesturi.fan-control-pwm.service; sudo rm -f /etc/systemd/system/io.github.anesturi.fan-control-pwm.service /usr/lib/systemd/system-sleep/io.github.anesturi.fan-control /usr/lib/io.github.anesturi.fan-control/pwm-unlock.sh` |
+| Polkit policy (legacy / extra) | `sudo rm /usr/share/polkit-1/actions/io.github.anesturi.fan-control.policy` |
 
-`revoke-access` removes `/usr/lib/io.github.anesturi.fan-control/`, the polkit
-policy, any older chmod-666 udev rule, the boot/resume unlock unit and sleep
-hook, and restores PWM nodes to `0644`.
+`revoke-access` is the preferred cleanup: it removes
+`/usr/lib/io.github.anesturi.fan-control/`, the polkit policy, any older
+chmod-666 udev rule, the boot/resume unlock unit and sleep hook, and restores
+PWM nodes to `0644`. The extra `sudo rm` rows above are only needed if revoke
+did not run or an older install left files behind.
 
 ## Credits
 
