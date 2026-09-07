@@ -637,17 +637,16 @@ def detect_backend(devices: list[dict[str, Any]], config: dict[str, Any]) -> dic
         if pwm_fans:
             name = "hwmon"
             can_control = True
-            passwordless = any(
-                os.access(f["pwm_path"], os.W_OK) for f in pwm_fans if f.get("pwm_path")
-            )
+            passwordless = trusted_installed_helper() is not None
             if passwordless:
                 notes.append(
-                    "Motherboard PWM is writable. Quiet / Balanced / Cool change duty with no password."
+                    "Fan duty is applied by the root-owned helper. "
+                    "Quiet / Balanced / Cool and Follow curve do not prompt again."
                 )
             else:
                 notes.append(
                     "Motherboard PWM needs a one-time unlock. Click “Allow passwordless control”, "
-                    "enter your password once, then Quiet / Balanced / Cool work without prompts."
+                    "enter your password once. PWM nodes stay root-only; only the installed helper can write them."
                 )
         else:
             name = "monitor"
@@ -1022,14 +1021,49 @@ def write_user_config(curve: dict[str, Any]) -> Path:
     return DEFAULT_USER_CONFIG
 
 
+INSTALLED_HELPER = Path("/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py")
+BOOTSTRAP_PRIVILEGED_COMMANDS = frozenset(
+    {"grant-access", "revoke-access", "install-config", "apply-config"}
+)
+
+
+def trusted_installed_helper() -> Path | None:
+    """Return the root-owned helper, or None if missing or not trustworthy."""
+    override = os.environ.get("FANCTL_INSTALLED_HELPER")
+    path = Path(override) if override else INSTALLED_HELPER
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if not path.is_file():
+        return None
+    expected_uid = int(os.environ.get("FANCTL_HELPER_UID", "0"))
+    if st.st_uid != expected_uid:
+        return None
+    if st.st_mode & 0o022:
+        return None
+    return path
+
+
 def privileged_helper() -> Path:
     return PLUGIN_DIR / "scripts" / "fanctl-privileged.py"
 
 
 def run_privileged(args: list[str], stdin_text: str | None = None) -> dict[str, Any]:
-    helper = privileged_helper()
+    """pkexec the root-owned helper. Checkout python3 is only for first grant/install."""
+    trusted = trusted_installed_helper()
     pkexec = which("pkexec")
-    argv = [sys.executable, str(helper), *args]
+    cmd = args[0] if args else ""
+    if trusted:
+        argv = [str(trusted), *args]
+    elif cmd in BOOTSTRAP_PRIVILEGED_COMMANDS:
+        argv = [sys.executable, str(privileged_helper()), *args]
+    else:
+        return {
+            "ok": False,
+            "error": "privileged helper is not installed or is not root-owned",
+            "hint": "python3 scripts/fanctl.py grant-access",
+        }
     if pkexec:
         argv = [pkexec, *argv]
     try:
@@ -1216,7 +1250,8 @@ def apply_hwmon_percent(
             result["warning"] = direct_err
         return result
 
-    # Follow runs headless; never pop a polkit dialog from the daemon.
+    # Follow may pkexec the installed helper (allow_active=yes, no prompt).
+    # Never fall back to pkexec of user-writable python3.
     if allow_pkexec and kind == "permission":
         privileged = run_privileged(["apply-pwms"], json.dumps({"writes": writes, "percent": percent}))
         if privileged.get("ok"):
@@ -1286,7 +1321,7 @@ def follow_tick(
     if last_percent is not None and abs(percent - last_percent) < min_delta:
         payload["skipped"] = True
         return payload, last_percent
-    pwm = apply_hwmon_percent(percent, require_spinning=False, allow_pkexec=False)
+    pwm = apply_hwmon_percent(percent, require_spinning=False, allow_pkexec=True)
     payload.update(pwm)
     if not pwm.get("ok", False):
         payload["ok"] = False
@@ -1582,14 +1617,24 @@ def _write_pwms_unprivileged(writes: list[dict[str, Any]]) -> tuple[bool, str | 
 
 
 def grant_access() -> dict[str, Any]:
-    """One password prompt: chmod PWM nodes and install udev so later applies are free."""
+    """One password prompt: install the root-owned helper and polkit policy."""
     result = run_privileged(["grant-access"])
     if result.get("ok"):
         return result
     return {
         "ok": False,
-        "error": result.get("error") or "could not unlock PWM access",
-        "hint": "pkexec will chmod motherboard pwm* nodes and install a udev rule",
+        "error": result.get("error") or "could not install the privileged helper",
+        "hint": "pkexec installs /usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py",
+    }
+
+
+def revoke_access() -> dict[str, Any]:
+    result = run_privileged(["revoke-access"])
+    if result.get("ok"):
+        return result
+    return {
+        "ok": False,
+        "error": result.get("error") or "could not remove the privileged helper",
     }
 
 
@@ -1597,14 +1642,22 @@ def install_bundled_config() -> dict[str, Any]:
     source = BUNDLED_CONFIG
     curve = parse_mbpfan_conf(source.read_text(encoding="utf-8")) if source.exists() else DEFAULT_CURVE
     write_user_config(curve)
-    privileged = run_privileged(["install-config", str(source)])
+    payload = json.dumps(
+        {
+            "curve": {
+                k: curve[k]
+                for k in ("low_temp", "high_temp", "max_temp", "polling_interval")
+            }
+        }
+    )
+    privileged = run_privileged(["install-config"], payload)
     if privileged.get("ok"):
         return {"ok": True, "path": str(DEFAULT_SYSTEM_CONFIG), "privileged": privileged}
     return {
         "ok": False,
         "error": privileged.get("error") or "could not read /etc/mbpfan.conf",
         "user_path": str(DEFAULT_USER_CONFIG),
-        "hint": "pkexec will copy the bundled etc/mbpfan.conf to /etc/mbpfan.conf",
+        "hint": "pkexec writes a validated curve to /etc/mbpfan.conf",
     }
 
 
@@ -1643,7 +1696,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser(
         "grant-access",
-        help="one-time unlock: chmod PWM + install udev (password once, then free)",
+        help="install the root-owned PWM helper (password once)",
+    )
+    sub.add_parser(
+        "revoke-access",
+        help="remove the helper, polkit policy, and leftover udev chmod rules",
     )
 
     apply_cmd = sub.add_parser("apply", help="write a fan curve")
@@ -1689,6 +1746,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "grant-access":
         emit(grant_access())
+        return 0
+
+    if cmd == "revoke-access":
+        emit(revoke_access())
         return 0
 
     if cmd == "install-config":

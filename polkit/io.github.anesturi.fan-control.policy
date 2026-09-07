@@ -5,14 +5,69 @@
 <policyconfig>
   <vendor>Omarchy fan control</vendor>
   <vendor_url>https://omarchy.org</vendor_url>
-  <action id="io.github.anesturi.fan-control.apply">
-    <description>Install or update the CPU/GPU fan curve</description>
-    <message>Authentication is required to write /etc/mbpfan.conf and apply fan speeds</message>
+
+  <action id="io.github.anesturi.fan-control.apply-pwms">
+    <description>Apply motherboard PWM values through the Tornaider helper</description>
+    <message>Authentication is required to set fan speeds</message>
     <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/python3</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply-pwms</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.grant">
+    <description>Install the Tornaider privileged helper</description>
+    <message>Authentication is required to install the fan-control helper</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">grant-access</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.revoke">
+    <description>Remove the Tornaider privileged helper</description>
+    <message>Authentication is required to remove the fan-control helper</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">revoke-access</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.install-config">
+    <description>Install /etc/mbpfan.conf</description>
+    <message>Authentication is required to write /etc/mbpfan.conf</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">install-config</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.apply-config">
+    <description>Write /etc/mbpfan.conf from a validated curve</description>
+    <message>Authentication is required to write /etc/mbpfan.conf</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply-config</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 </policyconfig>

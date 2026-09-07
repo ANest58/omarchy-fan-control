@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -16,6 +17,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import fanctl  # noqa: E402
+
+_priv_spec = importlib.util.spec_from_file_location(
+    "fanctl_privileged", ROOT / "scripts" / "fanctl-privileged.py"
+)
+assert _priv_spec and _priv_spec.loader
+privileged = importlib.util.module_from_spec(_priv_spec)
+_priv_spec.loader.exec_module(privileged)
 
 
 def write(path: Path, text: str) -> None:
@@ -335,7 +343,7 @@ class FollowTests(unittest.TestCase):
             return_value={"ok": True, "attempted": True, "percent": 100},
         ) as apply_mock:
             result, last = fanctl.follow_tick(45, min_delta=5, curve=curve)
-        apply_mock.assert_called_once_with(100, require_spinning=False, allow_pkexec=False)
+        apply_mock.assert_called_once_with(100, require_spinning=False, allow_pkexec=True)
         self.assertFalse(result["skipped"])
         self.assertEqual(last, 100)
 
@@ -381,7 +389,7 @@ class FollowTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["method"], "pkexec")
 
-    def test_follow_tick_never_pkexecs(self) -> None:
+    def test_follow_tick_pkexecs_installed_helper_on_permission(self) -> None:
         curve = {"low_temp": 50, "high_temp": 60, "max_temp": 75, "polling_interval": 1}
         with mock.patch.object(fanctl, "list_hwmon", return_value=[]), mock.patch.object(
             fanctl, "group_cpu", return_value={"temp": 80.0}
@@ -390,11 +398,14 @@ class FollowTests(unittest.TestCase):
         ), mock.patch.object(fanctl, "hwmon_pwm_fans", return_value=[
             {"pwm_path": "/tmp/pwm1", "pwm_enable_path": "/tmp/pwm1_enable", "pwm_max": 255}
         ]), mock.patch.object(fanctl, "release_skipped_pwms", return_value=[]), mock.patch.object(
-            fanctl, "run_privileged"
+            fanctl,
+            "run_privileged",
+            return_value={"ok": True, "count": 1, "wrote": []},
         ) as priv:
             result, last = fanctl.follow_tick(None, min_delta=5, curve=curve)
-        priv.assert_not_called()
-        self.assertFalse(result["ok"])
+        priv.assert_called_once()
+        self.assertEqual(priv.call_args[0][0], ["apply-pwms"])
+        self.assertTrue(result["ok"])
         self.assertEqual(last, 100)
 
     def test_follow_status_not_running(self) -> None:
@@ -435,6 +446,157 @@ class FollowTests(unittest.TestCase):
         data = json.loads(proc.stdout)
         self.assertTrue(data["ok"])
         self.assertFalse(data["running"])
+
+
+class PrivilegeBoundaryTests(unittest.TestCase):
+    def test_polkit_binds_helper_not_python3(self) -> None:
+        text = (ROOT / "polkit" / "io.github.anesturi.fan-control.policy").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("/usr/bin/python3", text)
+        self.assertNotIn("auth_admin_keep", text)
+        self.assertIn("/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py", text)
+        self.assertIn("org.freedesktop.policykit.exec.argv1", text)
+        self.assertIn(">yes<", text)
+        self.assertIn("apply-pwms", text)
+
+    def test_embedded_polkit_matches_repo_file(self) -> None:
+        repo = (ROOT / "polkit" / "io.github.anesturi.fan-control.policy").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(privileged.POLKIT_POLICY_TEXT.strip(), repo.strip())
+
+    def test_udev_does_not_chmod_world_writable(self) -> None:
+        rules = ROOT / "udev" / "99-io.github.anesturi.fan-control.rules"
+        text = rules.read_text(encoding="utf-8")
+        self.assertNotIn("0666", text)
+        self.assertNotRegex(text, r'(?i)MODE\s*=\s*"0?666"')
+        self.assertNotRegex(text, r"(?m)^[^#]*chmod")
+        self.assertFalse((ROOT / "scripts" / "pwm-unlock.sh").exists())
+        self.assertFalse((ROOT / "scripts" / "fan-control-pwm-unlock.service").exists())
+
+    def test_restore_pwm_uses_0644(self) -> None:
+        source = (ROOT / "scripts" / "fanctl-privileged.py").read_text(encoding="utf-8")
+        self.assertIn("os.chmod(path, 0o644)", source)
+        self.assertNotIn("0o666", source)
+        self.assertNotIn("chmod 666", source)
+
+    def test_allowed_sysfs_rejects_arbitrary_paths(self) -> None:
+        self.assertTrue(privileged.allowed_sysfs("/sys/class/hwmon/hwmon0/pwm1"))
+        self.assertTrue(privileged.allowed_sysfs("/sys/class/hwmon/hwmon0/pwm1_enable"))
+        self.assertTrue(
+            privileged.allowed_sysfs("/sys/devices/platform/applesmc.768/fan1_output")
+        )
+        self.assertFalse(privileged.allowed_sysfs("/tmp/pwm1"))
+        self.assertFalse(privileged.allowed_sysfs("/etc/shadow"))
+        self.assertFalse(privileged.allowed_sysfs("/usr/bin/python3"))
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "evil"
+            target.write_text("x", encoding="utf-8")
+            link = Path(tmp) / "pwm1"
+            link.symlink_to(target)
+            self.assertFalse(privileged.allowed_sysfs(str(link)))
+
+    def test_trusted_helper_rejects_wrong_uid_and_writable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "fanctl-privileged.py"
+            helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            helper.chmod(0o755)
+            env_ok = {
+                "FANCTL_INSTALLED_HELPER": str(helper),
+                "FANCTL_HELPER_UID": str(os.getuid()),
+            }
+            with mock.patch.dict(os.environ, env_ok, clear=False):
+                self.assertEqual(fanctl.trusted_installed_helper(), helper)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FANCTL_INSTALLED_HELPER": str(helper),
+                    "FANCTL_HELPER_UID": "0",
+                },
+                clear=False,
+            ):
+                if os.getuid() != 0:
+                    self.assertIsNone(fanctl.trusted_installed_helper())
+            helper.chmod(0o777)
+            with mock.patch.dict(os.environ, env_ok, clear=False):
+                self.assertIsNone(fanctl.trusted_installed_helper())
+            helper.chmod(0o775)
+            with mock.patch.dict(os.environ, env_ok, clear=False):
+                self.assertIsNone(fanctl.trusted_installed_helper())
+
+    def test_apply_pwms_without_trusted_helper_does_not_exec_python3(self) -> None:
+        with mock.patch.object(fanctl, "trusted_installed_helper", return_value=None), mock.patch.object(
+            fanctl, "which", return_value="/usr/bin/pkexec"
+        ), mock.patch.object(fanctl.subprocess, "run") as run:
+            result = fanctl.run_privileged(["apply-pwms"], '{"writes":[]}')
+        run.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertIn("helper", (result.get("error") or "").lower())
+
+    def test_grant_bootstrap_uses_checkout_helper_not_keep_policy(self) -> None:
+        with mock.patch.object(fanctl, "trusted_installed_helper", return_value=None), mock.patch.object(
+            fanctl, "which", return_value="/usr/bin/pkexec"
+        ), mock.patch.object(fanctl.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout='{"ok": true}', stderr="")
+            result = fanctl.run_privileged(["grant-access"])
+        self.assertTrue(result["ok"])
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[0], "/usr/bin/pkexec")
+        self.assertEqual(argv[1], sys.executable)
+        self.assertEqual(Path(argv[2]).name, "fanctl-privileged.py")
+        self.assertEqual(argv[3], "grant-access")
+
+    def test_apply_pwms_uses_installed_helper_without_python3(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "fanctl-privileged.py"
+            helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            helper.chmod(0o755)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FANCTL_INSTALLED_HELPER": str(helper),
+                    "FANCTL_HELPER_UID": str(os.getuid()),
+                },
+                clear=False,
+            ), mock.patch.object(
+                fanctl, "which", return_value="/usr/bin/pkexec"
+            ), mock.patch.object(fanctl.subprocess, "run") as run:
+                run.return_value = mock.Mock(
+                    returncode=0, stdout='{"ok": true, "count": 0}', stderr=""
+                )
+                result = fanctl.run_privileged(["apply-pwms"], '{"writes":[]}')
+            argv = run.call_args[0][0]
+            self.assertTrue(result["ok"])
+            self.assertEqual(argv[0], "/usr/bin/pkexec")
+            self.assertEqual(argv[1], str(helper))
+            self.assertEqual(argv[2], "apply-pwms")
+            self.assertNotIn(sys.executable, argv)
+            self.assertNotIn("/usr/bin/python3", argv)
+
+    def test_modified_checkout_helper_is_not_used_once_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "fanctl-privileged.py"
+            helper.write_text("#!/usr/bin/env python3\nprint('trusted')\n", encoding="utf-8")
+            helper.chmod(0o755)
+            checkout = fanctl.privileged_helper()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FANCTL_INSTALLED_HELPER": str(helper),
+                    "FANCTL_HELPER_UID": str(os.getuid()),
+                },
+                clear=False,
+            ), mock.patch.object(
+                fanctl, "which", return_value="/usr/bin/pkexec"
+            ), mock.patch.object(fanctl.subprocess, "run") as run:
+                run.return_value = mock.Mock(returncode=0, stdout='{"ok": true}', stderr="")
+                fanctl.run_privileged(["apply-pwms"], '{"writes":[]}')
+                fanctl.run_privileged(["grant-access"])
+            for call in run.call_args_list:
+                argv = call[0][0]
+                self.assertNotIn(str(checkout), argv)
+                self.assertNotIn(sys.executable, argv[1:])
 
 
 class CliTests(unittest.TestCase):

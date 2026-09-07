@@ -115,17 +115,24 @@ ${EDITOR:-nano} ~/.config/mbpfan/mbpfan.conf
 | `nvidia-settings` (optional) | NVIDIA fan RPM when Coolbits is enabled |
 | `mbpfan` (optional) | Apple SMC fan daemon on Intel MacBooks |
 | `t2fanrd` (optional) | T2 Mac fan daemon |
-| `pkexec` / polkit | One-time install of `/etc/mbpfan.conf`, PWM unlock, udev rule |
+| `pkexec` / polkit | One-time install of the root-owned helper and `/etc/mbpfan.conf` |
 
-Privileged writes go through `scripts/fanctl-privileged.py` via `pkexec` only
-when you choose install, grant-access, or Apple curve apply. Follow curve never
-prompts — it writes PWM as your user after that one-time unlock.
+**Allow passwordless control** installs a root-owned helper at
+`/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py` and a PolicyKit
+policy bound to that exact file. PWM sysfs stays `0644` (root-only). Fan duty
+is applied only by that helper — not by chmodding nodes world-writable, and
+not by authorizing `/usr/bin/python3`. Follow curve uses the same helper
+(`allow_active=yes` for `apply-pwms`, so it does not prompt again).
 
-Bundled files installed on request:
+The first grant may ask PolicyKit to run the checkout helper through
+`python3` once (default python3 policy, password every time). After that,
+only the installed helper is used. Re-run grant after upgrading from an older
+plugin copy so leftover `chmod 666` udev rules and `auth_admin_keep` python3
+policies are removed.
 
-- `udev/99-io.github.anesturi.fan-control.rules` — passwordless PWM after unlock
-- `scripts/pwm-unlock.sh` — re-chmod PWM at boot and after resume
-- `polkit/io.github.anesturi.fan-control.policy` — privileged helper actions
+Bundled files used on request:
+
+- `polkit/io.github.anesturi.fan-control.policy` — actions bound to the installed helper
 - `etc/mbpfan.conf` — default temperature curve for `mbpfan`
 
 ## Desktop motherboard fans (NCT6687)
@@ -181,13 +188,15 @@ Optional cleanup:
 
 | What | How to remove |
 |------|----------------|
+| Privileged helper + polkit + leftover udev | `python3 scripts/fanctl.py revoke-access` (password once) |
 | Follow service | `systemctl --user disable --now fan-control-follow.service` |
 | Follow state | `rm -rf ~/.local/state/omarchy/fan-control/` |
 | User curve copy | `rm -rf ~/.config/mbpfan/` |
 | System mbpfan config | `sudo rm /etc/mbpfan.conf` |
-| PWM udev rule | `sudo rm /etc/udev/rules.d/99-io.github.anesturi.fan-control.rules` |
-| PWM boot/resume unlock | `sudo systemctl disable --now io.github.anesturi.fan-control-pwm.service; sudo rm -f /etc/systemd/system/io.github.anesturi.fan-control-pwm.service /usr/lib/systemd/system-sleep/io.github.anesturi.fan-control /usr/lib/io.github.anesturi.fan-control/pwm-unlock.sh` |
-| Polkit policy | `sudo rm /usr/share/polkit-1/actions/io.github.anesturi.fan-control.policy` |
+
+`revoke-access` removes `/usr/lib/io.github.anesturi.fan-control/`, the polkit
+policy, any older chmod-666 udev rule, the boot/resume unlock unit and sleep
+hook, and restores PWM nodes to `0644`.
 
 ## Credits
 

@@ -14,22 +14,90 @@ from pathlib import Path
 ALLOWED_CONFIG = Path("/etc/mbpfan.conf")
 UDEV_RULE = Path("/etc/udev/rules.d/99-io.github.anesturi.fan-control.rules")
 POLKIT_POLICY = Path("/usr/share/polkit-1/actions/io.github.anesturi.fan-control.policy")
-HWMON_PWM = re.compile(
-    r"^/sys/(?:class/hwmon/hwmon\d+|devices/platform/nct668[37]\.\d+/hwmon/hwmon\d+)/pwm\d+$"
-)
-HWMON_ENABLE = re.compile(
-    r"^/sys/(?:class/hwmon/hwmon\d+|devices/platform/nct668[37]\.\d+/hwmon/hwmon\d+)/pwm\d+_enable$"
-)
-APPLE_OUTPUT = re.compile(r"^/sys/devices/platform/applesmc\.\d+/fan\d+_output$")
-APPLE_MANUAL = re.compile(r"^/sys/devices/platform/applesmc\.\d+/fan\d+_manual$")
-PLUGIN_DIR = Path(__file__).resolve().parent.parent
-BUNDLED_UDEV = PLUGIN_DIR / "udev" / "99-io.github.anesturi.fan-control.rules"
-BUNDLED_POLKIT = PLUGIN_DIR / "polkit" / "io.github.anesturi.fan-control.policy"
-BUNDLED_UNLOCK = PLUGIN_DIR / "scripts" / "pwm-unlock.sh"
-BUNDLED_UNLOCK_UNIT = PLUGIN_DIR / "scripts" / "fan-control-pwm-unlock.service"
-UNLOCK_SCRIPT = Path("/usr/lib/io.github.anesturi.fan-control/pwm-unlock.sh")
+HWMON_NODE = re.compile(r"^hwmon\d+$")
+PWM_NODE = re.compile(r"^pwm\d+(?:_enable)?$")
+APPLE_NODE = re.compile(r"^fan\d+_(?:output|manual)$")
+
+HELPER_DIR = Path("/usr/lib/io.github.anesturi.fan-control")
+INSTALLED_HELPER = HELPER_DIR / "fanctl-privileged.py"
 UNLOCK_SLEEP_HOOK = Path("/usr/lib/systemd/system-sleep/io.github.anesturi.fan-control")
 UNLOCK_UNIT = Path("/etc/systemd/system/io.github.anesturi.fan-control-pwm.service")
+LEGACY_UNLOCK_SCRIPT = HELPER_DIR / "pwm-unlock.sh"
+
+POLKIT_POLICY_TEXT = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Omarchy fan control</vendor>
+  <vendor_url>https://omarchy.org</vendor_url>
+
+  <action id="io.github.anesturi.fan-control.apply-pwms">
+    <description>Apply motherboard PWM values through the Tornaider helper</description>
+    <message>Authentication is required to set fan speeds</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply-pwms</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.grant">
+    <description>Install the Tornaider privileged helper</description>
+    <message>Authentication is required to install the fan-control helper</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">grant-access</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.revoke">
+    <description>Remove the Tornaider privileged helper</description>
+    <message>Authentication is required to remove the fan-control helper</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">revoke-access</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.install-config">
+    <description>Install /etc/mbpfan.conf</description>
+    <message>Authentication is required to write /etc/mbpfan.conf</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">install-config</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="io.github.anesturi.fan-control.apply-config">
+    <description>Write /etc/mbpfan.conf from a validated curve</description>
+    <message>Authentication is required to write /etc/mbpfan.conf</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply-config</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>
+"""
 
 
 def fail(message: str, code: int = 1) -> int:
@@ -106,18 +174,9 @@ def restart_units() -> list[str]:
     return restarted
 
 
-def install_config(source: str) -> int:
-    src = Path(source).resolve()
-    if not src.is_file():
-        return fail(f"could not read {source}")
-    text = src.read_text(encoding="utf-8")
-    if "[general]" not in text or "low_temp" not in text:
-        return fail("source is not an mbpfan.conf")
-    ALLOWED_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    ALLOWED_CONFIG.write_text(text, encoding="utf-8")
-    os.chmod(ALLOWED_CONFIG, 0o644)
-    restarted = restart_units()
-    return emit({"ok": True, "path": str(ALLOWED_CONFIG), "restarted": restarted})
+def install_config() -> int:
+    """Write /etc/mbpfan.conf from a validated curve. Never copy a user path."""
+    return apply_config()
 
 
 def apply_config() -> int:
@@ -131,20 +190,24 @@ def apply_config() -> int:
 
 
 def allowed_sysfs(path_str: str) -> bool:
-    # Validate both the /sys/class/hwmon path and the resolved platform path.
-    # nct6687d resolves class links under /sys/devices/platform/nct6687.*.
-    candidates = {path_str}
+    """Allow only resolved hwmon PWM or Apple SMC fan nodes under /sys."""
     try:
-        candidates.add(str(Path(path_str).resolve()))
+        resolved = Path(path_str).resolve()
     except OSError:
-        pass
-    return any(
-        HWMON_PWM.match(p)
-        or HWMON_ENABLE.match(p)
-        or APPLE_OUTPUT.match(p)
-        or APPLE_MANUAL.match(p)
-        for p in candidates
-    )
+        return False
+    text = str(resolved)
+    if ".." in resolved.parts:
+        return False
+    under_hwmon = text.startswith("/sys/class/hwmon/") or text.startswith("/sys/devices/")
+    if not under_hwmon:
+        return False
+    name = resolved.name
+    parent = resolved.parent.name
+    if PWM_NODE.match(name) and HWMON_NODE.match(parent):
+        return True
+    if APPLE_NODE.match(name) and parent.startswith("applesmc."):
+        return True
+    return False
 
 
 def apply_pwms() -> int:
@@ -177,80 +240,116 @@ def apply_pwms() -> int:
     return emit({"ok": True, "wrote": done, "count": len(done)})
 
 
-def chmod_pwm_tree() -> list[str]:
-    changed: list[str] = []
+def restore_pwm_tree() -> list[str]:
+    """Put PWM sysfs nodes back to root-only (0644). Never chmod them 0666."""
+    restored: list[str] = []
     root = Path("/sys/class/hwmon")
     if not root.exists():
-        return changed
+        return restored
     for hwmon in sorted(root.glob("hwmon*")):
         for path in list(hwmon.glob("pwm[0-9]")) + list(hwmon.glob("pwm[0-9]_enable")):
             try:
-                os.chmod(path, 0o666)
-                changed.append(str(path))
+                os.chmod(path, 0o644)
+                restored.append(str(path))
             except OSError:
                 continue
-    return changed
+    return restored
 
 
-def install_pwm_unlock_hooks() -> dict[str, str | None]:
-    """Boot oneshot + resume hook so PWM nodes stay user-writable after udev races."""
-    unlock_path = None
-    sleep_path = None
-    unit_path = None
-    if BUNDLED_UNLOCK.is_file():
-        UNLOCK_SCRIPT.parent.mkdir(parents=True, exist_ok=True)
-        text = BUNDLED_UNLOCK.read_text(encoding="utf-8")
-        UNLOCK_SCRIPT.write_text(text, encoding="utf-8")
-        os.chmod(UNLOCK_SCRIPT, 0o755)
-        unlock_path = str(UNLOCK_SCRIPT)
-        UNLOCK_SLEEP_HOOK.parent.mkdir(parents=True, exist_ok=True)
-        UNLOCK_SLEEP_HOOK.write_text(text, encoding="utf-8")
-        os.chmod(UNLOCK_SLEEP_HOOK, 0o755)
-        sleep_path = str(UNLOCK_SLEEP_HOOK)
-    if BUNDLED_UNLOCK_UNIT.is_file():
-        UNLOCK_UNIT.write_text(BUNDLED_UNLOCK_UNIT.read_text(encoding="utf-8"), encoding="utf-8")
-        os.chmod(UNLOCK_UNIT, 0o644)
-        unit_path = str(UNLOCK_UNIT)
-        subprocess.run(["systemctl", "daemon-reload"], check=False, capture_output=True)
+def _owned_root_not_group_or_world_writable(path: Path) -> bool:
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    return st.st_uid == 0 and (st.st_mode & 0o022) == 0
+
+
+def install_trusted_helper() -> str:
+    """Copy this running helper into a root-owned path and verify the result."""
+    HELPER_DIR.mkdir(parents=True, exist_ok=True)
+    os.chown(HELPER_DIR, 0, 0)
+    os.chmod(HELPER_DIR, 0o755)
+    payload = Path(__file__).resolve().read_bytes()
+    INSTALLED_HELPER.write_bytes(payload)
+    os.chown(INSTALLED_HELPER, 0, 0)
+    os.chmod(INSTALLED_HELPER, 0o755)
+    if not _owned_root_not_group_or_world_writable(INSTALLED_HELPER):
+        raise OSError("installed helper is not root-owned and non-writable")
+    if INSTALLED_HELPER.read_bytes() != payload:
+        raise OSError("installed helper content does not match the running helper")
+    return str(INSTALLED_HELPER)
+
+
+def remove_legacy_world_writable_pwm() -> list[str]:
+    removed: list[str] = []
+    for path in (
+        UDEV_RULE,
+        UNLOCK_SLEEP_HOOK,
+        UNLOCK_UNIT,
+        LEGACY_UNLOCK_SCRIPT,
+    ):
+        if path.is_file():
+            path.unlink()
+            removed.append(str(path))
+    if UNLOCK_UNIT.name:
         subprocess.run(
-            ["systemctl", "enable", "--now", UNLOCK_UNIT.name],
+            ["systemctl", "disable", "--now", UNLOCK_UNIT.name],
             check=False,
             capture_output=True,
         )
-    return {"unlock": unlock_path, "sleep": sleep_path, "unit": unit_path}
+        subprocess.run(["systemctl", "daemon-reload"], check=False, capture_output=True)
+    subprocess.run(["udevadm", "control", "--reload"], check=False, capture_output=True)
+    subprocess.run(
+        ["udevadm", "trigger", "--subsystem-match=hwmon"],
+        check=False,
+        capture_output=True,
+    )
+    return removed
 
 
 def grant_access() -> int:
-    """One-time: chmod live PWM nodes + install udev so presets stay passwordless."""
-    changed = chmod_pwm_tree()
-    udev_path = None
-    if BUNDLED_UDEV.is_file():
-        UDEV_RULE.parent.mkdir(parents=True, exist_ok=True)
-        UDEV_RULE.write_text(BUNDLED_UDEV.read_text(encoding="utf-8"), encoding="utf-8")
-        os.chmod(UDEV_RULE, 0o644)
-        udev_path = str(UDEV_RULE)
-        subprocess.run(["udevadm", "control", "--reload"], check=False, capture_output=True)
-        subprocess.run(["udevadm", "trigger", "--subsystem-match=hwmon"], check=False, capture_output=True)
-        changed = chmod_pwm_tree() or changed
-
-    polkit_path = None
-    if BUNDLED_POLKIT.is_file():
-        POLKIT_POLICY.parent.mkdir(parents=True, exist_ok=True)
-        POLKIT_POLICY.write_text(BUNDLED_POLKIT.read_text(encoding="utf-8"), encoding="utf-8")
-        os.chmod(POLKIT_POLICY, 0o644)
-        polkit_path = str(POLKIT_POLICY)
-
-    hooks = install_pwm_unlock_hooks()
+    """Install the root-owned helper + polkit. Do not chmod PWM world-writable."""
+    helper_path = install_trusted_helper()
+    POLKIT_POLICY.parent.mkdir(parents=True, exist_ok=True)
+    POLKIT_POLICY.write_text(POLKIT_POLICY_TEXT, encoding="utf-8")
+    os.chown(POLKIT_POLICY, 0, 0)
+    os.chmod(POLKIT_POLICY, 0o644)
+    if not _owned_root_not_group_or_world_writable(POLKIT_POLICY):
+        return fail("installed polkit policy is not root-owned and non-writable")
+    if POLKIT_POLICY.read_text(encoding="utf-8") != POLKIT_POLICY_TEXT:
+        return fail("installed polkit policy does not match the bound helper text")
+    restored = restore_pwm_tree()
+    removed = remove_legacy_world_writable_pwm()
+    restored = restore_pwm_tree() or restored
     return emit(
         {
             "ok": True,
-            "chmod": changed,
-            "count": len(changed),
-            "udev": udev_path,
-            "polkit": polkit_path,
-            **hooks,
+            "helper": helper_path,
+            "polkit": str(POLKIT_POLICY),
+            "pwm_restored": restored,
+            "removed_legacy": removed,
+            "count": len(restored),
         }
     )
+
+
+def revoke_access() -> int:
+    """Remove helper, polkit, leftover udev/hooks, and restore PWM perms."""
+    removed = remove_legacy_world_writable_pwm()
+    restored = restore_pwm_tree()
+    if POLKIT_POLICY.is_file():
+        POLKIT_POLICY.unlink()
+        removed.append(str(POLKIT_POLICY))
+    if INSTALLED_HELPER.is_file():
+        INSTALLED_HELPER.unlink()
+        removed.append(str(INSTALLED_HELPER))
+    if HELPER_DIR.is_dir():
+        for leftover in HELPER_DIR.iterdir():
+            leftover.unlink()
+            removed.append(str(leftover))
+        HELPER_DIR.rmdir()
+        removed.append(str(HELPER_DIR))
+    return emit({"ok": True, "removed": removed, "pwm_restored": restored})
 
 
 def main(argv: list[str]) -> int:
@@ -259,20 +358,20 @@ def main(argv: list[str]) -> int:
     if not argv:
         return fail(
             "usage: fanctl-privileged.py install-config PATH | apply-config | "
-            "apply-pwms | grant-access"
+            "apply-pwms | grant-access | revoke-access"
         )
     cmd = argv[0]
     try:
         if cmd == "install-config":
-            if len(argv) < 2:
-                return fail("install-config requires a source path")
-            return install_config(argv[1])
+            return install_config()
         if cmd == "apply-config":
             return apply_config()
         if cmd == "apply-pwms":
             return apply_pwms()
         if cmd == "grant-access":
             return grant_access()
+        if cmd == "revoke-access":
+            return revoke_access()
         return fail(f"unknown command {cmd}")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return fail(str(exc))

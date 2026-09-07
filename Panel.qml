@@ -169,7 +169,7 @@ Panel {
             root.snapshot = Model.applyFollowToSnapshot(root.snapshot, parsed)
           }
           var pwm = parsed.pwm
-          if (parsed.udev || parsed.chmod || parsed.count != null && parsed.polkit !== undefined)
+          if (parsed.helper || parsed.polkit || parsed.udev || parsed.chmod)
             root.actionStatus = "Passwordless fan control enabled"
           else if (parsed.running === true)
             root.actionStatus = parsed.percent != null

@@ -41,12 +41,10 @@ The bar never talks to Python directly except through `Panel.qml`, which runs
 | `Panel.qml` | Full UI: processes, keyboard shortcuts, device blocks, chart |
 | `Model.js` | Pure functions shared by QML and Node tests (no Qt imports) |
 | `scripts/fanctl.py` | Main backend: hwmon, snapshots, curves, PWM, follow daemon |
-| `scripts/fanctl-privileged.py` | pkexec helper for `/etc` writes and root PWM |
-| `scripts/pwm-unlock.sh` | Re-chmod PWM at boot and after resume (installed by grant-access) |
-| `scripts/fan-control-pwm-unlock.service` | systemd oneshot that runs `pwm-unlock.sh` |
-| `etc/mbpfan.conf` | Bundled default curve copied on user request |
-| `udev/*.rules` | udev rule template for passwordless PWM nodes |
-| `polkit/*.policy` | Polkit action definitions for the privileged helper |
+| `scripts/fanctl-privileged.py` | pkexec helper; grant copies it to `/usr/lib/io.github.anesturi.fan-control/` |
+| `etc/mbpfan.conf` | Bundled default curve written via validated JSON, not a file copy |
+| `udev/*.rules` | Comment-only leftover; grant/revoke delete any older chmod-666 copy |
+| `polkit/*.policy` | Bound to the installed helper path + argv1 (no `/usr/bin/python3`) |
 | `tests/fanctl_test.py` | Python unit tests with fake hwmon trees |
 | `tests/model.test.js` | Node tests for `Model.js` |
 | `docs/screenshot.png` | README panel screenshot |
@@ -155,7 +153,10 @@ Constants: `TEMP_HISTORY_WINDOW_MS = 60000`, `TEMP_SAMPLE_INTERVAL_MS = 3000`.
 |----------|---------|
 | `curve_pwm_percent(temp, curve)` | Map CPU °C → duty 25–100% |
 | `hwmon_pwm_fans()` | List controllable PWM channels (optional: include idle fans) |
-| `apply_hwmon_percent(percent)` | Write PWM sysfs nodes (direct; pkexec only on EACCES for interactive apply) |
+| `apply_hwmon_percent(percent)` | Direct write if possible; else pkexec the installed helper (`apply-pwms`) |
+| `trusted_installed_helper()` | Root-owned, non-group/world-writable helper, or None |
+| `run_privileged()` | pkexec installed helper; checkout `python3` only for grant/revoke/config bootstrap |
+| `grant_access()` / `revoke_access()` | Install or remove helper, polkit, leftover udev/hooks |
 | `_write_pwms_unprivileged()` | Enable manual mode + write value; verify stick |
 | `release_skipped_pwms()` | Return pump headers (PWM index 2) to EC auto |
 | `release_controlled_pwms()` | Return all case fans to auto on follow stop |
@@ -180,18 +181,19 @@ State files: `~/.local/state/omarchy/fan-control/` (`follow.pid`, `follow-state.
 ### CLI (`main()`)
 
 Subcommands: `snapshot`, `apply`, `follow run|start|stop|status|once`,
-`grant-access`, `install-config`.
+`grant-access`, `revoke-access`, `install-config`.
 
 ---
 
 ## `fanctl-privileged.py` — privileged helper
 
-Runs under `pkexec`. Actions:
+Runs under `pkexec`. Must be root-owned at
+`/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py`. Actions:
 
-- `grant-access` — chmod PWM nodes, install udev + polkit + boot/resume unlock
-- `apply-config` — write `/etc/mbpfan.conf`
-- `apply-pwms` — root write on interactive apply when sysfs is not user-writable
-- `install-config` — copy bundled config to `/etc`
+- `grant-access` — install this helper + polkit; restore PWM to 0644; remove legacy udev/hooks
+- `revoke-access` — reverse grant (helper, polkit, leftover udev/unit/hook, PWM 0644)
+- `apply-config` / `install-config` — write `/etc/mbpfan.conf` from a validated curve (no user-path copy)
+- `apply-pwms` — root write of validated hwmon/applesmc PWM paths only
 
 ---
 
@@ -248,6 +250,8 @@ node --test tests/model.test.js
 | `FANCTL_CONFIG_PATHS` | Colon-separated mbpfan.conf search paths |
 | `FANCTL_DEMO=1` | Fake sensor snapshot |
 | `FANCTL_FOLLOW_STATE_DIR` | Isolated follow PID/state directory |
+| `FANCTL_INSTALLED_HELPER` | Override helper path (tests) |
+| `FANCTL_HELPER_UID` | Expected helper owner uid (tests; default 0) |
 
 ---
 
