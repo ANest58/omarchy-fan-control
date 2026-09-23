@@ -41,7 +41,8 @@ The bar never talks to Python directly except through `Panel.qml`, which runs
 | `Panel.qml` | Full UI: processes, keyboard shortcuts, device blocks, chart |
 | `Model.js` | Pure functions shared by QML and Node tests (no Qt imports) |
 | `scripts/fanctl.py` | Main backend: hwmon, snapshots, curves, PWM, follow daemon |
-| `scripts/fanctl-privileged.py` | pkexec helper; grant copies it to `/usr/lib/io.github.anesturi.fan-control/` |
+| `scripts/fanctl-privileged.py` | Package-owned pkexec helper (installed by `tornaider-helper`) |
+| `packaging/PKGBUILD` | Pacman package that places the helper + polkit as root-owned files |
 | `scripts/pwm-unlock.sh` | **Removed.** Older installs may still have a copy; grant/revoke delete it |
 | `scripts/fan-control-pwm-unlock.service` | **Removed.** Same cleanup as the unlock script |
 | `etc/mbpfan.conf` | Bundled default curve written via validated JSON, not a file copy |
@@ -157,9 +158,9 @@ Constants: `TEMP_HISTORY_WINDOW_MS = 60000`, `TEMP_SAMPLE_INTERVAL_MS = 3000`.
 | `hwmon_pwm_fans()` | List controllable PWM channels (optional: include idle fans) |
 | `apply_hwmon_percent(percent)` | Direct write if possible; else pkexec the installed helper (`apply-pwms`) |
 | `trusted_installed_helper()` | Root-owned, non-group/world-writable helper, or None |
-| `run_privileged()` | pkexec installed helper only; missing helper → sealed `install(1)` bootstrap then retry |
-| `sealed_helper_payload()` / `bootstrap_install_helper()` | Hash-pin checkout bytes, write via `pkexec install` (never exec checkout) |
-| `grant_access()` / `revoke_access()` | Install or remove helper, polkit, leftover udev/hooks |
+| `run_privileged()` | Fixed `/usr/bin/pkexec` + package helper under cleared env; no checkout bootstrap |
+| `privileged_env()` | PATH=/usr/bin:/bin plus display/dbus for GUI auth only |
+| `grant_access()` / `revoke_access()` | Legacy cleanup via package helper (install package first) |
 | `_write_pwms_unprivileged()` | Enable manual mode + write value; verify stick |
 | `release_skipped_pwms()` | Return pump headers (PWM index 2) to EC auto |
 | `release_controlled_pwms()` | Return all case fans to auto on follow stop |
@@ -190,11 +191,11 @@ Subcommands: `snapshot`, `apply`, `follow run|start|stop|status|once`,
 
 ## `fanctl-privileged.py` — privileged helper
 
-Runs under `pkexec`. Must be root-owned at
+Runs under `pkexec`. Must be installed by **tornaider-helper** as root-owned at
 `/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py`. Actions:
 
-- `grant-access` — install this helper + polkit; restore PWM to 0644; remove legacy udev/hooks
-- `revoke-access` — reverse grant (helper, polkit, leftover udev/unit/hook, PWM 0644)
+- `grant-access` — verify package path; repair polkit; restore PWM to 0644; remove legacy udev/hooks
+- `revoke-access` — remove legacy unlocks only (package files stay; use `pacman -R`)
 - `apply-config` / `install-config` — write `/etc/mbpfan.conf` from a validated curve (no user-path copy)
 - `apply-pwms` — root write of validated hwmon/applesmc PWM paths only
 
@@ -224,34 +225,35 @@ Panel / follow daemon
         ▼
    fanctl.py
         │
-        ├── PWM 0644 readable? ──write sysfs──► done (rare after grant)
+        ├── PWM writable? ──write sysfs──► done (rare)
         │
         └── run_privileged(argv)
                  │
-                 ├── trusted helper exists (uid 0, not group/world-writable)
-                 │         pkexec /usr/lib/.../fanctl-privileged.py argv1
+                 ├── package helper missing / not root-owned
+                 │         error + hint: makepkg -si (tornaider-helper)
                  │
-                 └── else only grant/revoke/install-config/apply-config
-                           1) snapshot+sha256 checkout helper into memory
-                           2) pkexec install -D -m 0755 /dev/stdin INSTALLED_HELPER
-                           3) pkexec INSTALLED_HELPER argv1
-                           (never pkexec python3 or a checkout path)
+                 └── trusted helper at fixed path
+                           env cleared (PATH=/usr/bin:/bin)
+                           /usr/bin/pkexec /usr/lib/.../fanctl-privileged.py argv1
 ```
 
-`apply-pwms` never falls back to checkout `python3`. If the helper is missing
-or world-writable, PWM apply returns an error and asks the user to grant.
+`apply-pwms` never falls back to checkout code or PATH-resolved binaries. If
+the package helper is missing, PWM apply returns an error and asks for
+`makepkg -si`.
 
-First grant refuses to copy from a checkout `__file__`. Bootstrap places the
-sealed bytes with system `install(1)`; then the installed helper writes the
-embedded polkit XML, verifies owner/mode/content, restores PWM to `0644`,
-and deletes:
+**Trusted bootstrap** is pacman (`packaging/PKGBUILD`). The plugin cannot choose
+root code, digests, executables, or destinations. After install, grant-access
+only verifies the package helper, repairs polkit from embedded text, restores
+PWM to `0644`, and deletes legacy unlocks:
 
 - `/etc/udev/rules.d/99-io.github.anesturi.fan-control.rules`
 - `/usr/lib/systemd/system-sleep/io.github.anesturi.fan-control`
 - `/etc/systemd/system/io.github.anesturi.fan-control-pwm.service`
 - `/usr/lib/io.github.anesturi.fan-control/pwm-unlock.sh`
 
-After that, only the installed helper is used.
+`revoke-access` removes those leftovers only; remove the package with
+`pacman -R tornaider-helper`.
+
 
 ---
 
@@ -279,13 +281,13 @@ After that, only the installed helper is used.
 
 ### Click **Allow passwordless control**
 
-1. `actionProc` runs `fanctl.py grant-access`.
-2. `run_privileged(["grant-access"])` snapshots+hashes the checkout helper, writes
-   it with `pkexec install … /dev/stdin`, then pkexecs only that root-owned path.
-3. Installed helper refreshes itself in place + polkit, restores PWM `0644`,
-   removes legacy udev. It refuses to copy from a checkout `__file__`.
-4. JSON includes `helper` and `polkit` → panel shows “Passwordless fan control enabled”.
-5. Later preset/follow PWM writes: `pkexec <installed helper> apply-pwms`.
+1. Install `tornaider-helper` once: `cd packaging && makepkg -si`.
+2. `actionProc` runs `fanctl.py grant-access`.
+3. `run_privileged` requires the package helper; calls fixed
+   `/usr/bin/pkexec` + `/usr/lib/…/fanctl-privileged.py` under a cleared env.
+4. Helper verifies it is the package path, repairs polkit, restores PWM `0644`,
+   removes legacy udev. It refuses to trust a checkout `__file__`.
+5. Later preset/follow PWM writes: same fixed pkexec + helper for `apply-pwms`.
 
 ---
 
@@ -300,12 +302,11 @@ parsing, snapshots, PWM apply, follow hysteresis, CLI smoke tests, and
 - polkit has no `/usr/bin/python3` and no `auth_admin_keep`
 - embedded `POLKIT_POLICY_TEXT` matches `polkit/*.policy`
 - udev file has no `MODE=0666`; unlock script/unit are gone
-- `trusted_installed_helper()` rejects wrong uid and group/world-writable files
-- `apply-pwms` without a trusted helper does not exec python3
-- first grant bootstraps via `pkexec install /dev/stdin`, never checkout python3
-- `EXPECTED_HELPER_SHA256` matches checkout; tampered helper is refused
-- `install_trusted_helper()` refuses to copy from a checkout `__file__`
-- once a helper is installed, checkout `fanctl-privileged.py` is not on the argv
+- no `FANCTL_*` privileged overrides; no sealed/bootstrap checkout install
+- missing package helper does not exec anything
+- `run_privileged` uses fixed `/usr/bin/pkexec` + helper under cleared env
+- `install_trusted_helper()` refuses checkout `__file__`
+- `packaging/PKGBUILD` installs the fixed helper and polkit paths
 
 ### Node (`tests/model.test.js`)
 

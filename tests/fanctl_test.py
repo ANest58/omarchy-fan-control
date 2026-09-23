@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import os
@@ -498,161 +497,119 @@ class PrivilegeBoundaryTests(unittest.TestCase):
             link.symlink_to(target)
             self.assertFalse(privileged.allowed_sysfs(str(link)))
 
-    def test_trusted_helper_rejects_wrong_uid_and_writable(self) -> None:
+    def test_trusted_helper_has_no_env_overrides(self) -> None:
+        source = (ROOT / "scripts" / "fanctl.py").read_text(encoding="utf-8")
+        self.assertNotIn("FANCTL_INSTALLED_HELPER", source)
+        self.assertNotIn("FANCTL_HELPER_UID", source)
+        self.assertNotIn("FANCTL_HELPER_SHA256", source)
+        self.assertNotIn("EXPECTED_HELPER_SHA256", source)
+        self.assertNotIn("sealed_helper_payload", source)
+        self.assertNotIn("bootstrap_install_helper", source)
+
+    def test_trusted_helper_rejects_wrong_uid_writable_and_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             helper = Path(tmp) / "fanctl-privileged.py"
             helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
             helper.chmod(0o755)
-            env_ok = {
-                "FANCTL_INSTALLED_HELPER": str(helper),
-                "FANCTL_HELPER_UID": str(os.getuid()),
-            }
-            with mock.patch.dict(os.environ, env_ok, clear=False):
-                self.assertEqual(fanctl.trusted_installed_helper(), helper)
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "FANCTL_INSTALLED_HELPER": str(helper),
-                    "FANCTL_HELPER_UID": "0",
-                },
-                clear=False,
-            ):
+            with mock.patch.object(fanctl, "INSTALLED_HELPER", helper):
                 if os.getuid() != 0:
                     self.assertIsNone(fanctl.trusted_installed_helper())
-            helper.chmod(0o777)
-            with mock.patch.dict(os.environ, env_ok, clear=False):
+                helper.chmod(0o777)
                 self.assertIsNone(fanctl.trusted_installed_helper())
-            helper.chmod(0o775)
-            with mock.patch.dict(os.environ, env_ok, clear=False):
+                helper.unlink()
+                helper.symlink_to("/etc/passwd")
                 self.assertIsNone(fanctl.trusted_installed_helper())
 
-    def test_apply_pwms_without_trusted_helper_does_not_exec_python3(self) -> None:
+            real = Path(tmp) / "real-helper.py"
+            real.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            real.chmod(0o755)
+            st = real.stat()
+
+            class _Stat:
+                st_uid = 0
+                st_mode = st.st_mode
+
+            with mock.patch.object(fanctl, "INSTALLED_HELPER", real), mock.patch.object(
+                Path, "stat", return_value=_Stat()
+            ), mock.patch.object(Path, "is_symlink", return_value=False), mock.patch.object(
+                Path, "is_file", return_value=True
+            ):
+                self.assertEqual(fanctl.trusted_installed_helper(), real)
+
+    def test_apply_pwms_without_trusted_helper_does_not_exec(self) -> None:
         with mock.patch.object(fanctl, "trusted_installed_helper", return_value=None), mock.patch.object(
-            fanctl, "which", return_value="/usr/bin/pkexec"
-        ), mock.patch.object(fanctl.subprocess, "run") as run:
+            fanctl.subprocess, "run"
+        ) as run:
             result = fanctl.run_privileged(["apply-pwms"], '{"writes":[]}')
         run.assert_not_called()
         self.assertFalse(result["ok"])
-        self.assertIn("helper", (result.get("error") or "").lower())
-
-    def test_helper_sha256_constant_matches_checkout(self) -> None:
-        digest = hashlib.sha256(
-            (ROOT / "scripts" / "fanctl-privileged.py").read_bytes()
-        ).hexdigest()
-        self.assertEqual(digest, fanctl.EXPECTED_HELPER_SHA256)
-
-    def test_sealed_helper_payload_rejects_tampered_checkout(self) -> None:
-        real = (ROOT / "scripts" / "fanctl-privileged.py").read_bytes()
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "fanctl-privileged.py"
-            fake.write_bytes(real + b"\n# tampered\n")
-            with mock.patch.object(fanctl, "privileged_helper", return_value=fake):
-                with self.assertRaises(ValueError) as ctx:
-                    fanctl.sealed_helper_payload()
-            self.assertIn("sha256 mismatch", str(ctx.exception))
+        self.assertIn("package-owned", (result.get("error") or "").lower())
+        self.assertIn("makepkg", (result.get("hint") or "").lower())
 
     def test_install_trusted_helper_refuses_checkout_path(self) -> None:
         with self.assertRaises(OSError) as ctx:
             privileged.install_trusted_helper()
-        self.assertIn("refusing to install", str(ctx.exception))
+        self.assertIn("refusing to trust", str(ctx.exception))
 
-    def test_grant_bootstrap_uses_system_install_not_checkout_python(self) -> None:
-        payload = (ROOT / "scripts" / "fanctl-privileged.py").read_bytes()
-        helper_path = Path("/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py")
-        calls: list[tuple[list[str], object]] = []
+    def test_run_privileged_uses_fixed_paths_and_cleared_env(self) -> None:
+        class FakePkexec:
+            def is_file(self) -> bool:
+                return True
 
-        def fake_which(name: str) -> str | None:
-            return {
-                "pkexec": "/usr/bin/pkexec",
-                "install": "/usr/bin/install",
-            }.get(name)
+            def __str__(self) -> str:
+                return "/usr/bin/pkexec"
 
-        trust_values = [None, helper_path]
-
-        def fake_trusted() -> Path | None:
-            return trust_values.pop(0) if trust_values else helper_path
-
-        def fake_run(argv, **kwargs):
-            calls.append((list(argv), kwargs.get("input")))
-            return mock.Mock(returncode=0, stdout='{"ok": true}', stderr="")
-
-        with mock.patch.object(fanctl, "trusted_installed_helper", side_effect=fake_trusted), mock.patch.object(
-            fanctl, "which", side_effect=fake_which
-        ), mock.patch.object(
-            fanctl, "sealed_helper_payload", return_value=payload
-        ), mock.patch.object(fanctl.subprocess, "run", side_effect=fake_run):
-            result = fanctl.run_privileged(["grant-access"])
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(len(calls), 2)
-
-        boot_argv, boot_input = calls[0]
-        self.assertEqual(boot_argv[0], "/usr/bin/pkexec")
-        self.assertEqual(boot_argv[1], "/usr/bin/install")
-        self.assertIn("-D", boot_argv)
-        self.assertIn("/dev/stdin", boot_argv)
-        self.assertEqual(boot_argv[-1], str(helper_path))
-        self.assertEqual(boot_input, payload)
-        self.assertNotIn(sys.executable, boot_argv)
-        self.assertFalse(any("omarchy/plugins" in part for part in boot_argv))
-
-        run_argv, _ = calls[1]
-        self.assertEqual(run_argv[0], "/usr/bin/pkexec")
-        self.assertEqual(run_argv[1], str(helper_path))
-        self.assertEqual(run_argv[2], "grant-access")
-        self.assertNotIn(sys.executable, run_argv)
-
-    def test_apply_pwms_uses_installed_helper_without_python3(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            helper = Path(tmp) / "fanctl-privileged.py"
-            helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-            helper.chmod(0o755)
+        with mock.patch.object(
+            fanctl, "trusted_installed_helper", return_value=fanctl.INSTALLED_HELPER
+        ), mock.patch.object(fanctl, "PKEXEC", FakePkexec()), mock.patch.object(
+            fanctl.subprocess, "run"
+        ) as run:
+            run.return_value = mock.Mock(
+                returncode=0, stdout='{"ok": true, "count": 0}', stderr=""
+            )
             with mock.patch.dict(
                 os.environ,
                 {
-                    "FANCTL_INSTALLED_HELPER": str(helper),
-                    "FANCTL_HELPER_UID": str(os.getuid()),
+                    "PATH": "/tmp/evil:/usr/bin",
+                    "FANCTL_INSTALLED_HELPER": "/tmp/evil-helper",
+                    "FANCTL_HELPER_SHA256": "deadbeef",
+                    "DISPLAY": ":0",
                 },
                 clear=False,
-            ), mock.patch.object(
-                fanctl, "which", return_value="/usr/bin/pkexec"
-            ), mock.patch.object(fanctl.subprocess, "run") as run:
-                run.return_value = mock.Mock(
-                    returncode=0, stdout='{"ok": true, "count": 0}', stderr=""
-                )
+            ):
                 result = fanctl.run_privileged(["apply-pwms"], '{"writes":[]}')
-            argv = run.call_args[0][0]
-            self.assertTrue(result["ok"])
-            self.assertEqual(argv[0], "/usr/bin/pkexec")
-            self.assertEqual(argv[1], str(helper))
-            self.assertEqual(argv[2], "apply-pwms")
-            self.assertNotIn(sys.executable, argv)
-            self.assertNotIn("/usr/bin/python3", argv)
+        self.assertTrue(result["ok"])
+        argv = run.call_args[0][0]
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(argv[0], "/usr/bin/pkexec")
+        self.assertEqual(argv[1], str(fanctl.INSTALLED_HELPER))
+        self.assertEqual(argv[2], "apply-pwms")
+        self.assertNotIn(sys.executable, argv)
+        self.assertNotIn("/usr/bin/python3", argv)
+        self.assertFalse(any("omarchy/plugins" in part for part in argv))
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertNotIn("FANCTL_INSTALLED_HELPER", env)
+        self.assertNotIn("FANCTL_HELPER_SHA256", env)
+        self.assertEqual(env.get("DISPLAY"), ":0")
 
-    def test_modified_checkout_helper_is_not_used_once_installed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            helper = Path(tmp) / "fanctl-privileged.py"
-            helper.write_text("#!/usr/bin/env python3\nprint('trusted')\n", encoding="utf-8")
-            helper.chmod(0o755)
-            checkout = fanctl.privileged_helper()
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "FANCTL_INSTALLED_HELPER": str(helper),
-                    "FANCTL_HELPER_UID": str(os.getuid()),
-                },
-                clear=False,
-            ), mock.patch.object(
-                fanctl, "which", return_value="/usr/bin/pkexec"
-            ), mock.patch.object(fanctl.subprocess, "run") as run:
-                run.return_value = mock.Mock(returncode=0, stdout='{"ok": true}', stderr="")
-                fanctl.run_privileged(["apply-pwms"], '{"writes":[]}')
-                fanctl.run_privileged(["grant-access"])
-            for call in run.call_args_list:
-                argv = call[0][0]
-                self.assertNotIn(str(checkout), argv)
-                self.assertNotIn(sys.executable, argv[1:])
+    def test_missing_helper_does_not_bootstrap_from_checkout(self) -> None:
+        with mock.patch.object(fanctl, "trusted_installed_helper", return_value=None), mock.patch.object(
+            fanctl.subprocess, "run"
+        ) as run:
+            for cmd in ("grant-access", "revoke-access", "install-config", "apply-config"):
+                result = fanctl.run_privileged([cmd])
+                self.assertFalse(result["ok"], cmd)
+                self.assertIn("package-owned", (result.get("error") or "").lower())
+        run.assert_not_called()
 
+    def test_packaging_pkgbuild_installs_fixed_paths(self) -> None:
+        pkgbuild = (ROOT / "packaging" / "PKGBUILD").read_text(encoding="utf-8")
+        self.assertIn("pkgname=tornaider-helper", pkgbuild)
+        self.assertIn("/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py", pkgbuild)
+        self.assertIn(
+            "/usr/share/polkit-1/actions/io.github.anesturi.fan-control.policy", pkgbuild
+        )
+        self.assertNotIn("FANCTL_", pkgbuild)
 
 class CliTests(unittest.TestCase):
     def test_snapshot_cli_demo(self) -> None:

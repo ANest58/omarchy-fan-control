@@ -17,14 +17,18 @@ omarchy bar move io.github.anesturi.fan-control --section right
 omarchy restart shell
 ```
 
-On first install, open the panel and click **Allow passwordless control** if
-motherboard PWM nodes are root-only (desktop PCs). Apple hardware may also need
-`/etc/mbpfan.conf` — use **Install /etc/mbpfan.conf** in the panel or key `i`.
+Desktop PWM control needs the **package-owned** helper (trusted bootstrap via
+pacman — the plugin checkout never installs root code):
 
-If you granted access on an older plugin copy (udev `chmod 666` / python3
-polkit), click **Allow passwordless control** again after pulling `master`.
-That replaces the old policy, restores PWM nodes to `0644`, and installs the
-root-owned helper.
+```sh
+PLUGIN="$HOME/.config/omarchy/plugins/io.github.anesturi.fan-control"
+cd "$PLUGIN/packaging" && makepkg -si
+```
+
+Then open the panel and click **Allow passwordless control** once to clean up
+any legacy world-writable udev/hooks from older installs. Apple hardware may
+also need `/etc/mbpfan.conf` — use **Install /etc/mbpfan.conf** in the panel
+or key `i` (also requires `tornaider-helper`).
 
 ## Usage
 
@@ -52,8 +56,9 @@ Presets and follow are mutually exclusive: applying a preset **stops** follow mo
 
 ### Follow curve — step by step
 
-1. **Unlock PWM once** (desktop): panel → **Allow passwordless control**  
-   Or: `python3 scripts/fanctl.py grant-access`
+1. **Install the package helper** (desktop): `cd packaging && makepkg -si`  
+   Then panel → **Allow passwordless control** (legacy cleanup), or:  
+   `python3 scripts/fanctl.py grant-access`
 
 2. **Pick a starting curve** (optional): click **Balanced** or edit thresholds in  
    `~/.config/mbpfan/mbpfan.conf` (`low_temp`, `high_temp`, `max_temp`).
@@ -123,7 +128,7 @@ From the plugin directory (`$PLUGIN` as above):
 | `python3 scripts/fanctl.py snapshot` | One JSON sensor snapshot (`--demo` for fake data) |
 | `python3 scripts/fanctl.py apply --preset balanced --user-only` | Save curve and set a fixed PWM duty |
 | `python3 scripts/fanctl.py follow start` / `stop` / `status` | Follow curve daemon |
-| `python3 scripts/fanctl.py grant-access` | Install root-owned helper + polkit (password once) |
+| `python3 scripts/fanctl.py grant-access` | Verify package helper + remove legacy unlocks (password once) |
 | `python3 scripts/fanctl.py revoke-access` | Remove helper, polkit, leftover udev/hooks |
 | `python3 scripts/fanctl.py install-config` | Write a validated curve to `/etc/mbpfan.conf` |
 
@@ -137,28 +142,22 @@ From the plugin directory (`$PLUGIN` as above):
 | `nvidia-settings` (optional) | NVIDIA fan RPM when Coolbits is enabled |
 | `mbpfan` (optional) | Apple SMC fan daemon on Intel MacBooks |
 | `t2fanrd` (optional) | T2 Mac fan daemon |
-| `pkexec` / polkit | One-time install of the root-owned helper and `/etc/mbpfan.conf` |
+| `pkexec` / polkit | Runs only the package-owned helper for PWM and `/etc/mbpfan.conf` |
 
-**Allow passwordless control** installs a root-owned helper at
-`/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py` and a PolicyKit
-policy bound to that exact file. PWM sysfs stays `0644` (root-only). Fan duty
-is applied only by that helper — not by chmodding nodes world-writable, and
-not by authorizing `/usr/bin/python3`. Follow curve uses the same helper
-(`allow_active=yes` for `apply-pwms`, so it does not prompt again).
+**Trusted bootstrap:** install `tornaider-helper` with `packaging/PKGBUILD`
+(`makepkg -si`). Pacman places root-owned files; the plugin never chooses root
+code, digests, executables, or destinations.
 
-First grant never executes the checkout helper as root. It:
+**Allow passwordless control** (after the package is installed) only verifies
+that helper and removes legacy world-writable udev/hooks. Fan duty is applied
+only by `/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py` via
+fixed `/usr/bin/pkexec` under a cleared environment — not by chmodding nodes
+world-writable, not by authorizing `/usr/bin/python3`, and not by PATH/`which`
+lookups. Follow curve uses the same helper (`allow_active=yes` for
+`apply-pwms`, so it does not prompt again).
 
-1. Snapshots `scripts/fanctl-privileged.py` into memory and checks a pinned
-   SHA-256 digest
-2. Writes those bytes with `pkexec install -D -m 0755 /dev/stdin …` (system
-   `install(1)` only — no checkout path on the argv)
-3. Runs `pkexec /usr/lib/…/fanctl-privileged.py grant-access` so PolicyKit and
-   legacy cleanup run only from the root-owned copy
-
-Replacing the checkout file while the password dialog is open cannot change
-what is installed or executed. Re-run grant after upgrading from an older
-plugin copy so leftover `chmod 666` udev rules and `auth_admin_keep` python3
-policies are removed.
+There are no `FANCTL_*` overrides on the privileged path. Replacing checkout
+files cannot change what root executes.
 
 Bundled files used on request:
 
@@ -170,12 +169,14 @@ Bundled files used on request:
 - `scripts/pwm-unlock.sh` and `scripts/fan-control-pwm-unlock.service` — **removed**.
   Grant/revoke still delete any copies that an older plugin version installed.
 
-### What grant-access installs
+### What the package installs
 
 | Path | Mode | Role |
 |------|------|------|
 | `/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py` | `0755`, uid 0 | Only executable PolicyKit will run |
 | `/usr/share/polkit-1/actions/io.github.anesturi.fan-control.policy` | `0644`, uid 0 | Bound to that helper + `argv1` |
+
+Remove with `sudo pacman -R tornaider-helper`.
 
 PWM sysfs stays `0644`. A second local account cannot write PWM nodes; only
 the helper (active session, `apply-pwms`) can.

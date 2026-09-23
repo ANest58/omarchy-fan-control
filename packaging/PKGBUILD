@@ -1,0 +1,35 @@
+# Maintainer: Andon <https://github.com/ANest58>
+# Package-owned root helper for Tornaider. This is the only trusted bootstrap:
+# pacman installs immutable root-owned files; the Omarchy plugin never chooses
+# root code, digests, executables, or install destinations.
+
+pkgname=tornaider-helper
+pkgver=1.0.1
+pkgrel=1
+pkgdesc='Root-owned PolicyKit helper for Tornaider (Omarchy fan control)'
+arch=('any')
+url='https://github.com/ANest58/omarchy-fan-control'
+license=('MIT')
+depends=('python' 'polkit')
+conflicts=('io.github.anesturi.fan-control-helper')
+provides=('io.github.anesturi.fan-control-helper')
+source=()
+sha256sums=()
+
+prepare() {
+  _repo="$(cd "${startdir}/.." && pwd)"
+  install -Dm644 "${_repo}/scripts/fanctl-privileged.py" \
+    "${srcdir}/fanctl-privileged.py"
+  install -Dm644 "${_repo}/polkit/io.github.anesturi.fan-control.policy" \
+    "${srcdir}/io.github.anesturi.fan-control.policy"
+  install -Dm644 "${_repo}/LICENSE" "${srcdir}/LICENSE"
+}
+
+package() {
+  install -Dm755 "${srcdir}/fanctl-privileged.py" \
+    "${pkgdir}/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py"
+  install -Dm644 "${srcdir}/io.github.anesturi.fan-control.policy" \
+    "${pkgdir}/usr/share/polkit-1/actions/io.github.anesturi.fan-control.policy"
+  install -Dm644 "${srcdir}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

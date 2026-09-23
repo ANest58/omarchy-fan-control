@@ -265,11 +265,10 @@ def _owned_root_not_group_or_world_writable(path: Path) -> bool:
 
 
 def install_trusted_helper() -> str:
-    """Refresh the root-owned helper in place. Never copy from a checkout path.
+    """Verify the package-owned helper in place. Never copy from a checkout.
 
-    Bootstrap must already have placed this file at INSTALLED_HELPER via a
-    system install(1) of sealed bytes. Executing a user-writable checkout as
-    root and then copying it would reintroduce the grant-time TOCTOU.
+    Pacman (tornaider-helper) is the only trusted bootstrap. This function
+    only confirms the running process is that immutable root-owned path.
     """
     running = Path(__file__).resolve()
     try:
@@ -278,21 +277,14 @@ def install_trusted_helper() -> str:
         expected = INSTALLED_HELPER
     if running != expected:
         raise OSError(
-            f"refusing to install from {running}; "
-            f"bootstrap must place the helper at {INSTALLED_HELPER} first "
-            "(never execute a user-writable checkout as root)"
+            f"refusing to trust {running}; "
+            f"install tornaider-helper so the helper lives at {INSTALLED_HELPER}"
         )
-    HELPER_DIR.mkdir(parents=True, exist_ok=True)
-    os.chown(HELPER_DIR, 0, 0)
-    os.chmod(HELPER_DIR, 0o755)
-    payload = running.read_bytes()
-    INSTALLED_HELPER.write_bytes(payload)
-    os.chown(INSTALLED_HELPER, 0, 0)
-    os.chmod(INSTALLED_HELPER, 0o755)
     if not _owned_root_not_group_or_world_writable(INSTALLED_HELPER):
         raise OSError("installed helper is not root-owned and non-writable")
-    if INSTALLED_HELPER.read_bytes() != payload:
-        raise OSError("installed helper content does not match the running helper")
+    if not _owned_root_not_group_or_world_writable(HELPER_DIR):
+        os.chown(HELPER_DIR, 0, 0)
+        os.chmod(HELPER_DIR, 0o755)
     return str(INSTALLED_HELPER)
 
 
@@ -324,8 +316,9 @@ def remove_legacy_world_writable_pwm() -> list[str]:
 
 
 def grant_access() -> int:
-    """Install the root-owned helper + polkit. Do not chmod PWM world-writable."""
+    """Verify package helper/polkit and remove legacy world-writable PWM unlocks."""
     helper_path = install_trusted_helper()
+    # Repair polkit from the embedded package text if an admin removed it.
     POLKIT_POLICY.parent.mkdir(parents=True, exist_ok=True)
     POLKIT_POLICY.write_text(POLKIT_POLICY_TEXT, encoding="utf-8")
     os.chown(POLKIT_POLICY, 0, 0)
@@ -350,22 +343,17 @@ def grant_access() -> int:
 
 
 def revoke_access() -> int:
-    """Remove helper, polkit, leftover udev/hooks, and restore PWM perms."""
+    """Remove legacy unlocks and restore PWM perms. Package files stay installed."""
     removed = remove_legacy_world_writable_pwm()
     restored = restore_pwm_tree()
-    if POLKIT_POLICY.is_file():
-        POLKIT_POLICY.unlink()
-        removed.append(str(POLKIT_POLICY))
-    if INSTALLED_HELPER.is_file():
-        INSTALLED_HELPER.unlink()
-        removed.append(str(INSTALLED_HELPER))
-    if HELPER_DIR.is_dir():
-        for leftover in HELPER_DIR.iterdir():
-            leftover.unlink()
-            removed.append(str(leftover))
-        HELPER_DIR.rmdir()
-        removed.append(str(HELPER_DIR))
-    return emit({"ok": True, "removed": removed, "pwm_restored": restored})
+    return emit(
+        {
+            "ok": True,
+            "removed": removed,
+            "pwm_restored": restored,
+            "hint": "To remove the package-owned helper: sudo pacman -R tornaider-helper",
+        }
+    )
 
 
 def main(argv: list[str]) -> int:

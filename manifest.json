@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.anesturi.fan-control",
   "name": "Tornaider",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Andon",
   "license": "MIT",
   "description": "Tornaider — CPU and GPU temperatures, fan curves, and PWM control for the Omarchy bar.",

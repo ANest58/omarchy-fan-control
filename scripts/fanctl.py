@@ -5,15 +5,15 @@ Reads temperatures and fan RPM from hwmon (and nvidia-smi when present).
 Resolves mbpfan.conf from the real system path, a user copy, and the
 plugin-bundled fallback so a missing /etc/mbpfan.conf never blanks the widget.
 
-Unprivileged by default. Privileged writes go through fanctl-privileged.py
-via pkexec.
+Unprivileged by default. Privileged writes go only through the package-owned
+helper at /usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py via
+/usr/bin/pkexec (install tornaider-helper with packaging/PKGBUILD).
 """
 
 from __future__ import annotations
 
 import argparse
 import errno
-import hashlib
 import json
 import os
 import shutil
@@ -29,6 +29,12 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SYSTEM_CONFIG = Path("/etc/mbpfan.conf")
 DEFAULT_USER_CONFIG = Path.home() / ".config" / "mbpfan" / "mbpfan.conf"
 BUNDLED_CONFIG = PLUGIN_DIR / "etc" / "mbpfan.conf"
+INSTALLED_HELPER = Path("/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py")
+PKEXEC = Path("/usr/bin/pkexec")
+PACKAGE_HINT = (
+    "Install the package-owned helper first: "
+    "cd packaging && makepkg -si  (package: tornaider-helper)"
+)
 
 CPU_HWMON_NAMES = {
     "coretemp",
@@ -415,8 +421,8 @@ def _fan_record(device: Path, index: str, kind: str, chip: str, label: str | Non
         "manual_path": str(manual_path) if manual_path.exists() else None,
         # Root/pkexec can still write 0444 sysfs PWM nodes (CAP_DAC_OVERRIDE).
         "controllable": bool(
-            (pwm_path.exists() and (os.access(pwm_path, os.W_OK) or os.geteuid() == 0 or which("pkexec")))
-            or (output_path.exists() and (os.access(output_path, os.W_OK) or os.geteuid() == 0 or which("pkexec")))
+            (pwm_path.exists() and (os.access(pwm_path, os.W_OK) or os.geteuid() == 0 or PKEXEC.is_file()))
+            or (output_path.exists() and (os.access(output_path, os.W_OK) or os.geteuid() == 0 or PKEXEC.is_file()))
         ),
     }
 
@@ -646,8 +652,9 @@ def detect_backend(devices: list[dict[str, Any]], config: dict[str, Any]) -> dic
                 )
             else:
                 notes.append(
-                    "Motherboard PWM needs a one-time unlock. Click “Allow passwordless control”, "
-                    "enter your password once. PWM nodes stay root-only; only the installed helper can write them."
+                    "Motherboard PWM needs the package-owned helper. Install tornaider-helper "
+                    "(cd packaging && makepkg -si), then click “Allow passwordless control” once "
+                    "to clean legacy unlocks. PWM nodes stay root-only."
                 )
         else:
             name = "monitor"
@@ -1022,125 +1029,56 @@ def write_user_config(curve: dict[str, Any]) -> Path:
     return DEFAULT_USER_CONFIG
 
 
-INSTALLED_HELPER = Path("/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py")
-BOOTSTRAP_PRIVILEGED_COMMANDS = frozenset(
-    {"grant-access", "revoke-access", "install-config", "apply-config"}
-)
-# Pinned digest of scripts/fanctl-privileged.py. Update when that file changes.
-EXPECTED_HELPER_SHA256 = (
-    "4ea91fb4fa95c22d440346a218500eab48195884bfc64fabc973212650852918"
-)
-
-
 def trusted_installed_helper() -> Path | None:
-    """Return the root-owned helper, or None if missing or not trustworthy."""
-    override = os.environ.get("FANCTL_INSTALLED_HELPER")
-    path = Path(override) if override else INSTALLED_HELPER
+    """Return the package-owned helper only when it is root-owned and fixed-path."""
+    path = INSTALLED_HELPER
     try:
         st = path.stat()
     except OSError:
         return None
+    if path.is_symlink():
+        return None
     if not path.is_file():
         return None
-    expected_uid = int(os.environ.get("FANCTL_HELPER_UID", "0"))
-    if st.st_uid != expected_uid:
+    if st.st_uid != 0:
         return None
     if st.st_mode & 0o022:
         return None
-    return path
+    return INSTALLED_HELPER
 
 
-def privileged_helper() -> Path:
-    return PLUGIN_DIR / "scripts" / "fanctl-privileged.py"
-
-
-def sealed_helper_payload() -> bytes:
-    """Read checkout helper bytes and verify the pinned digest before any pkexec.
-
-    Content is snapshotted before the auth dialog so a TOCTOU replace of the
-    checkout file during authentication cannot change what gets installed.
-    """
-    path = privileged_helper()
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
-    expected = os.environ.get("FANCTL_HELPER_SHA256", EXPECTED_HELPER_SHA256)
-    if digest != expected:
-        raise ValueError(
-            f"checkout helper sha256 mismatch (got {digest}, expected {expected}); "
-            "refusing to bootstrap a modified helper"
-        )
-    return data
-
-
-def bootstrap_install_helper(payload: bytes) -> dict[str, Any]:
-    """Install sealed helper bytes via pkexec + install(1). Never exec checkout."""
-    pkexec = which("pkexec")
-    install_bin = which("install")
-    if not install_bin:
-        return {
-            "ok": False,
-            "error": "install(1) not found; cannot bootstrap the privileged helper",
-        }
-    dest = Path(os.environ.get("FANCTL_INSTALLED_HELPER", str(INSTALLED_HELPER)))
-    argv = [install_bin, "-D", "-m", "0755", "/dev/stdin", str(dest)]
-    if pkexec:
-        argv = [pkexec, *argv]
-    elif os.geteuid() != 0:
-        return {
-            "ok": False,
-            "error": "pkexec not found; cannot bootstrap the privileged helper",
-        }
-    try:
-        proc = subprocess.run(
-            argv,
-            input=payload,
-            capture_output=True,
-            timeout=120,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"ok": False, "error": str(exc)}
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or f"exit {proc.returncode}".encode()).strip()
-        if isinstance(err, bytes):
-            err = err.decode("utf-8", "replace")
-        return {"ok": False, "error": err or "bootstrap install failed"}
-    return {"ok": True, "helper": str(dest), "bytes": len(payload)}
+def privileged_env() -> dict[str, str]:
+    """Minimal cleared environment for pkexec. No PATH/digest/dest overrides."""
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "LANG": os.environ.get("LANG") or "C.UTF-8",
+    }
+    for key in (
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+    ):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
 
 
 def run_privileged(args: list[str], stdin_text: str | None = None) -> dict[str, Any]:
-    """pkexec only the root-owned helper. Bootstrap with install(1), never checkout."""
+    """pkexec only the package-owned helper at a fixed path under a cleared env."""
     trusted = trusted_installed_helper()
-    pkexec = which("pkexec")
-    cmd = args[0] if args else ""
-    if not trusted and cmd in BOOTSTRAP_PRIVILEGED_COMMANDS:
-        try:
-            # Snapshot + hash before any authentication dialog.
-            payload = sealed_helper_payload()
-        except (OSError, ValueError) as exc:
-            return {"ok": False, "error": str(exc)}
-        boot = bootstrap_install_helper(payload)
-        if not boot.get("ok"):
-            return boot
-        trusted = trusted_installed_helper()
-        if not trusted:
-            return {
-                "ok": False,
-                "error": (
-                    "bootstrap wrote the helper but it is not trusted "
-                    "(expected root-owned, not group/world-writable)"
-                ),
-                "hint": f"check ownership of {INSTALLED_HELPER}",
-            }
     if not trusted:
         return {
             "ok": False,
-            "error": "privileged helper is not installed or is not root-owned",
-            "hint": "python3 scripts/fanctl.py grant-access",
+            "error": "package-owned privileged helper is not installed or is not trusted",
+            "hint": PACKAGE_HINT,
         }
-    argv = [str(trusted), *args]
-    if pkexec:
-        argv = [pkexec, *argv]
+    if not PKEXEC.is_file():
+        return {"ok": False, "error": f"{PKEXEC} is missing"}
+    # Fixed absolute paths only — never which(), never checkout, never env overrides.
+    argv = [str(PKEXEC), str(INSTALLED_HELPER), *args]
     try:
         proc = subprocess.run(
             argv,
@@ -1149,6 +1087,7 @@ def run_privileged(args: list[str], stdin_text: str | None = None) -> dict[str, 
             capture_output=True,
             timeout=60,
             check=False,
+            env=privileged_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "error": str(exc)}
@@ -1349,8 +1288,8 @@ def apply_hwmon_percent(
             "skipped_pump": released,
             "error": privileged.get("error")
             or direct_err
-            or "PWM write failed — run grant-access once to unlock passwordless control",
-            "hint": "python3 scripts/fanctl.py grant-access",
+            or "PWM write failed — install tornaider-helper, then run grant-access",
+            "hint": PACKAGE_HINT,
         }
     return {
         "ok": False,
@@ -1360,8 +1299,8 @@ def apply_hwmon_percent(
         "wrote": [],
         "skipped_pump": released,
         "error": direct_err
-        or "PWM write failed — run grant-access once to unlock passwordless control",
-        "hint": "python3 scripts/fanctl.py grant-access",
+        or "PWM write failed — install tornaider-helper, then run grant-access",
+        "hint": PACKAGE_HINT,
     }
 
 
@@ -1692,14 +1631,14 @@ def _write_pwms_unprivileged(writes: list[dict[str, Any]]) -> tuple[bool, str | 
 
 
 def grant_access() -> dict[str, Any]:
-    """One password prompt: install the root-owned helper and polkit policy."""
+    """Clean legacy unlocks via the package-owned helper (pacman install first)."""
     result = run_privileged(["grant-access"])
     if result.get("ok"):
         return result
     return {
         "ok": False,
-        "error": result.get("error") or "could not install the privileged helper",
-        "hint": "pkexec installs /usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py",
+        "error": result.get("error") or "could not verify the privileged helper",
+        "hint": result.get("hint") or PACKAGE_HINT,
     }
 
 
@@ -1709,7 +1648,8 @@ def revoke_access() -> dict[str, Any]:
         return result
     return {
         "ok": False,
-        "error": result.get("error") or "could not remove the privileged helper",
+        "error": result.get("error") or "could not clean legacy privileged state",
+        "hint": result.get("hint") or PACKAGE_HINT,
     }
 
 
@@ -1732,7 +1672,7 @@ def install_bundled_config() -> dict[str, Any]:
         "ok": False,
         "error": privileged.get("error") or "could not read /etc/mbpfan.conf",
         "user_path": str(DEFAULT_USER_CONFIG),
-        "hint": "pkexec writes a validated curve to /etc/mbpfan.conf",
+        "hint": PACKAGE_HINT,
     }
 
 
@@ -1771,11 +1711,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser(
         "grant-access",
-        help="install the root-owned PWM helper (password once)",
+        help="verify package helper and remove legacy world-writable PWM unlocks",
     )
     sub.add_parser(
         "revoke-access",
-        help="remove the helper, polkit policy, and leftover udev chmod rules",
+        help="remove legacy unlocks (package files stay; use pacman -R tornaider-helper)",
     )
 
     apply_cmd = sub.add_parser("apply", help="write a fan curve")
