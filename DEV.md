@@ -157,7 +157,8 @@ Constants: `TEMP_HISTORY_WINDOW_MS = 60000`, `TEMP_SAMPLE_INTERVAL_MS = 3000`.
 | `hwmon_pwm_fans()` | List controllable PWM channels (optional: include idle fans) |
 | `apply_hwmon_percent(percent)` | Direct write if possible; else pkexec the installed helper (`apply-pwms`) |
 | `trusted_installed_helper()` | Root-owned, non-group/world-writable helper, or None |
-| `run_privileged()` | pkexec installed helper; checkout `python3` only for grant/revoke/config bootstrap |
+| `run_privileged()` | pkexec installed helper only; missing helper → sealed `install(1)` bootstrap then retry |
+| `sealed_helper_payload()` / `bootstrap_install_helper()` | Hash-pin checkout bytes, write via `pkexec install` (never exec checkout) |
 | `grant_access()` / `revoke_access()` | Install or remove helper, polkit, leftover udev/hooks |
 | `_write_pwms_unprivileged()` | Enable manual mode + write value; verify stick |
 | `release_skipped_pwms()` | Return pump headers (PWM index 2) to EC auto |
@@ -231,15 +232,18 @@ Panel / follow daemon
                  │         pkexec /usr/lib/.../fanctl-privileged.py argv1
                  │
                  └── else only grant/revoke/install-config/apply-config
-                           pkexec python3 <checkout helper> argv1
-                           (default python3 policy; password every time)
+                           1) snapshot+sha256 checkout helper into memory
+                           2) pkexec install -D -m 0755 /dev/stdin INSTALLED_HELPER
+                           3) pkexec INSTALLED_HELPER argv1
+                           (never pkexec python3 or a checkout path)
 ```
 
 `apply-pwms` never falls back to checkout `python3`. If the helper is missing
 or world-writable, PWM apply returns an error and asks the user to grant.
 
-First grant copies `__file__` (the running helper) into the root path, writes
-the embedded polkit XML, verifies owner/mode/content, restores PWM to `0644`,
+First grant refuses to copy from a checkout `__file__`. Bootstrap places the
+sealed bytes with system `install(1)`; then the installed helper writes the
+embedded polkit XML, verifies owner/mode/content, restores PWM to `0644`,
 and deletes:
 
 - `/etc/udev/rules.d/99-io.github.anesturi.fan-control.rules`
@@ -276,9 +280,10 @@ After that, only the installed helper is used.
 ### Click **Allow passwordless control**
 
 1. `actionProc` runs `fanctl.py grant-access`.
-2. `run_privileged(["grant-access"])` pkexecs checkout `python3` the first time,
-   then the installed helper on later grants.
-3. Helper installs itself + polkit, restores PWM `0644`, removes legacy udev.
+2. `run_privileged(["grant-access"])` snapshots+hashes the checkout helper, writes
+   it with `pkexec install … /dev/stdin`, then pkexecs only that root-owned path.
+3. Installed helper refreshes itself in place + polkit, restores PWM `0644`,
+   removes legacy udev. It refuses to copy from a checkout `__file__`.
 4. JSON includes `helper` and `polkit` → panel shows “Passwordless fan control enabled”.
 5. Later preset/follow PWM writes: `pkexec <installed helper> apply-pwms`.
 
@@ -297,6 +302,9 @@ parsing, snapshots, PWM apply, follow hysteresis, CLI smoke tests, and
 - udev file has no `MODE=0666`; unlock script/unit are gone
 - `trusted_installed_helper()` rejects wrong uid and group/world-writable files
 - `apply-pwms` without a trusted helper does not exec python3
+- first grant bootstraps via `pkexec install /dev/stdin`, never checkout python3
+- `EXPECTED_HELPER_SHA256` matches checkout; tampered helper is refused
+- `install_trusted_helper()` refuses to copy from a checkout `__file__`
 - once a helper is installed, checkout `fanctl-privileged.py` is not on the argv
 
 ### Node (`tests/model.test.js`)

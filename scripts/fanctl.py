@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import json
 import os
 import shutil
@@ -1025,6 +1026,10 @@ INSTALLED_HELPER = Path("/usr/lib/io.github.anesturi.fan-control/fanctl-privileg
 BOOTSTRAP_PRIVILEGED_COMMANDS = frozenset(
     {"grant-access", "revoke-access", "install-config", "apply-config"}
 )
+# Pinned digest of scripts/fanctl-privileged.py. Update when that file changes.
+EXPECTED_HELPER_SHA256 = (
+    "4ea91fb4fa95c22d440346a218500eab48195884bfc64fabc973212650852918"
+)
 
 
 def trusted_installed_helper() -> Path | None:
@@ -1049,21 +1054,91 @@ def privileged_helper() -> Path:
     return PLUGIN_DIR / "scripts" / "fanctl-privileged.py"
 
 
+def sealed_helper_payload() -> bytes:
+    """Read checkout helper bytes and verify the pinned digest before any pkexec.
+
+    Content is snapshotted before the auth dialog so a TOCTOU replace of the
+    checkout file during authentication cannot change what gets installed.
+    """
+    path = privileged_helper()
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    expected = os.environ.get("FANCTL_HELPER_SHA256", EXPECTED_HELPER_SHA256)
+    if digest != expected:
+        raise ValueError(
+            f"checkout helper sha256 mismatch (got {digest}, expected {expected}); "
+            "refusing to bootstrap a modified helper"
+        )
+    return data
+
+
+def bootstrap_install_helper(payload: bytes) -> dict[str, Any]:
+    """Install sealed helper bytes via pkexec + install(1). Never exec checkout."""
+    pkexec = which("pkexec")
+    install_bin = which("install")
+    if not install_bin:
+        return {
+            "ok": False,
+            "error": "install(1) not found; cannot bootstrap the privileged helper",
+        }
+    dest = Path(os.environ.get("FANCTL_INSTALLED_HELPER", str(INSTALLED_HELPER)))
+    argv = [install_bin, "-D", "-m", "0755", "/dev/stdin", str(dest)]
+    if pkexec:
+        argv = [pkexec, *argv]
+    elif os.geteuid() != 0:
+        return {
+            "ok": False,
+            "error": "pkexec not found; cannot bootstrap the privileged helper",
+        }
+    try:
+        proc = subprocess.run(
+            argv,
+            input=payload,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": str(exc)}
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or f"exit {proc.returncode}".encode()).strip()
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        return {"ok": False, "error": err or "bootstrap install failed"}
+    return {"ok": True, "helper": str(dest), "bytes": len(payload)}
+
+
 def run_privileged(args: list[str], stdin_text: str | None = None) -> dict[str, Any]:
-    """pkexec the root-owned helper. Checkout python3 is only for first grant/install."""
+    """pkexec only the root-owned helper. Bootstrap with install(1), never checkout."""
     trusted = trusted_installed_helper()
     pkexec = which("pkexec")
     cmd = args[0] if args else ""
-    if trusted:
-        argv = [str(trusted), *args]
-    elif cmd in BOOTSTRAP_PRIVILEGED_COMMANDS:
-        argv = [sys.executable, str(privileged_helper()), *args]
-    else:
+    if not trusted and cmd in BOOTSTRAP_PRIVILEGED_COMMANDS:
+        try:
+            # Snapshot + hash before any authentication dialog.
+            payload = sealed_helper_payload()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        boot = bootstrap_install_helper(payload)
+        if not boot.get("ok"):
+            return boot
+        trusted = trusted_installed_helper()
+        if not trusted:
+            return {
+                "ok": False,
+                "error": (
+                    "bootstrap wrote the helper but it is not trusted "
+                    "(expected root-owned, not group/world-writable)"
+                ),
+                "hint": f"check ownership of {INSTALLED_HELPER}",
+            }
+    if not trusted:
         return {
             "ok": False,
             "error": "privileged helper is not installed or is not root-owned",
             "hint": "python3 scripts/fanctl.py grant-access",
         }
+    argv = [str(trusted), *args]
     if pkexec:
         argv = [pkexec, *argv]
     try:

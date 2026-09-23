@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -534,18 +535,72 @@ class PrivilegeBoundaryTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("helper", (result.get("error") or "").lower())
 
-    def test_grant_bootstrap_uses_checkout_helper_not_keep_policy(self) -> None:
-        with mock.patch.object(fanctl, "trusted_installed_helper", return_value=None), mock.patch.object(
-            fanctl, "which", return_value="/usr/bin/pkexec"
-        ), mock.patch.object(fanctl.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout='{"ok": true}', stderr="")
+    def test_helper_sha256_constant_matches_checkout(self) -> None:
+        digest = hashlib.sha256(
+            (ROOT / "scripts" / "fanctl-privileged.py").read_bytes()
+        ).hexdigest()
+        self.assertEqual(digest, fanctl.EXPECTED_HELPER_SHA256)
+
+    def test_sealed_helper_payload_rejects_tampered_checkout(self) -> None:
+        real = (ROOT / "scripts" / "fanctl-privileged.py").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fanctl-privileged.py"
+            fake.write_bytes(real + b"\n# tampered\n")
+            with mock.patch.object(fanctl, "privileged_helper", return_value=fake):
+                with self.assertRaises(ValueError) as ctx:
+                    fanctl.sealed_helper_payload()
+            self.assertIn("sha256 mismatch", str(ctx.exception))
+
+    def test_install_trusted_helper_refuses_checkout_path(self) -> None:
+        with self.assertRaises(OSError) as ctx:
+            privileged.install_trusted_helper()
+        self.assertIn("refusing to install", str(ctx.exception))
+
+    def test_grant_bootstrap_uses_system_install_not_checkout_python(self) -> None:
+        payload = (ROOT / "scripts" / "fanctl-privileged.py").read_bytes()
+        helper_path = Path("/usr/lib/io.github.anesturi.fan-control/fanctl-privileged.py")
+        calls: list[tuple[list[str], object]] = []
+
+        def fake_which(name: str) -> str | None:
+            return {
+                "pkexec": "/usr/bin/pkexec",
+                "install": "/usr/bin/install",
+            }.get(name)
+
+        trust_values = [None, helper_path]
+
+        def fake_trusted() -> Path | None:
+            return trust_values.pop(0) if trust_values else helper_path
+
+        def fake_run(argv, **kwargs):
+            calls.append((list(argv), kwargs.get("input")))
+            return mock.Mock(returncode=0, stdout='{"ok": true}', stderr="")
+
+        with mock.patch.object(fanctl, "trusted_installed_helper", side_effect=fake_trusted), mock.patch.object(
+            fanctl, "which", side_effect=fake_which
+        ), mock.patch.object(
+            fanctl, "sealed_helper_payload", return_value=payload
+        ), mock.patch.object(fanctl.subprocess, "run", side_effect=fake_run):
             result = fanctl.run_privileged(["grant-access"])
+
         self.assertTrue(result["ok"])
-        argv = run.call_args[0][0]
-        self.assertEqual(argv[0], "/usr/bin/pkexec")
-        self.assertEqual(argv[1], sys.executable)
-        self.assertEqual(Path(argv[2]).name, "fanctl-privileged.py")
-        self.assertEqual(argv[3], "grant-access")
+        self.assertEqual(len(calls), 2)
+
+        boot_argv, boot_input = calls[0]
+        self.assertEqual(boot_argv[0], "/usr/bin/pkexec")
+        self.assertEqual(boot_argv[1], "/usr/bin/install")
+        self.assertIn("-D", boot_argv)
+        self.assertIn("/dev/stdin", boot_argv)
+        self.assertEqual(boot_argv[-1], str(helper_path))
+        self.assertEqual(boot_input, payload)
+        self.assertNotIn(sys.executable, boot_argv)
+        self.assertFalse(any("omarchy/plugins" in part for part in boot_argv))
+
+        run_argv, _ = calls[1]
+        self.assertEqual(run_argv[0], "/usr/bin/pkexec")
+        self.assertEqual(run_argv[1], str(helper_path))
+        self.assertEqual(run_argv[2], "grant-access")
+        self.assertNotIn(sys.executable, run_argv)
 
     def test_apply_pwms_uses_installed_helper_without_python3(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

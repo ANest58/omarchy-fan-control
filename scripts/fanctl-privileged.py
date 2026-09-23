@@ -265,11 +265,27 @@ def _owned_root_not_group_or_world_writable(path: Path) -> bool:
 
 
 def install_trusted_helper() -> str:
-    """Copy this running helper into a root-owned path and verify the result."""
+    """Refresh the root-owned helper in place. Never copy from a checkout path.
+
+    Bootstrap must already have placed this file at INSTALLED_HELPER via a
+    system install(1) of sealed bytes. Executing a user-writable checkout as
+    root and then copying it would reintroduce the grant-time TOCTOU.
+    """
+    running = Path(__file__).resolve()
+    try:
+        expected = INSTALLED_HELPER.resolve()
+    except OSError:
+        expected = INSTALLED_HELPER
+    if running != expected:
+        raise OSError(
+            f"refusing to install from {running}; "
+            f"bootstrap must place the helper at {INSTALLED_HELPER} first "
+            "(never execute a user-writable checkout as root)"
+        )
     HELPER_DIR.mkdir(parents=True, exist_ok=True)
     os.chown(HELPER_DIR, 0, 0)
     os.chmod(HELPER_DIR, 0o755)
-    payload = Path(__file__).resolve().read_bytes()
+    payload = running.read_bytes()
     INSTALLED_HELPER.write_bytes(payload)
     os.chown(INSTALLED_HELPER, 0, 0)
     os.chmod(INSTALLED_HELPER, 0o755)

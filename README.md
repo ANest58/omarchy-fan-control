@@ -146,9 +146,17 @@ is applied only by that helper — not by chmodding nodes world-writable, and
 not by authorizing `/usr/bin/python3`. Follow curve uses the same helper
 (`allow_active=yes` for `apply-pwms`, so it does not prompt again).
 
-The first grant may ask PolicyKit to run the checkout helper through
-`python3` once (default python3 policy, password every time). After that,
-only the installed helper is used. Re-run grant after upgrading from an older
+First grant never executes the checkout helper as root. It:
+
+1. Snapshots `scripts/fanctl-privileged.py` into memory and checks a pinned
+   SHA-256 digest
+2. Writes those bytes with `pkexec install -D -m 0755 /dev/stdin …` (system
+   `install(1)` only — no checkout path on the argv)
+3. Runs `pkexec /usr/lib/…/fanctl-privileged.py grant-access` so PolicyKit and
+   legacy cleanup run only from the root-owned copy
+
+Replacing the checkout file while the password dialog is open cannot change
+what is installed or executed. Re-run grant after upgrading from an older
 plugin copy so leftover `chmod 666` udev rules and `auth_admin_keep` python3
 policies are removed.
 
